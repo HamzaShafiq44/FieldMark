@@ -58,6 +58,54 @@ const VERDICT_LABELS: Record<InspectionResult['verdict'], string> = {
   defect: 'Defect detected',
   needs_review: 'Needs a closer look',
 }
+const RIPENESS_GUIDE = [
+  {
+    name: 'Orange',
+    emoji: '🍊',
+    lessRipe: [
+      'A greenish or pale cast may remain, especially near the stem.',
+      'Peel shine or tight texture alone cannot establish ripeness.',
+    ],
+    riper: [
+      'Orange to yellow-orange color is common, but some ripe varieties keep green areas.',
+      'A drier, flatter stem button can be a weak cue, not a rule.',
+    ],
+  },
+  {
+    name: 'Apple',
+    emoji: '🍎',
+    lessRipe: [
+      'The background color may look greener; red blush varies by variety.',
+      'A matte finish can occur, but surface sheen varies too.',
+    ],
+    riper: [
+      'The background may shift toward cream or yellow as it ripens.',
+      'Judge the base color, not red blush alone; varieties and finishes differ.',
+    ],
+  },
+  {
+    name: 'Banana',
+    emoji: '🍌',
+    lessRipe: [
+      'A mostly green peel and more angular shape often indicate an earlier stage.',
+    ],
+    riper: [
+      'The peel commonly turns yellow; small brown sugar spots can be normal ripening.',
+      'Green tips may remain while the banana continues to ripen.',
+    ],
+  },
+  {
+    name: 'Tomato',
+    emoji: '🍅',
+    lessRipe: [
+      'A pale or green cast, including green shoulders, may appear before full color.',
+    ],
+    riper: [
+      'Color often deepens toward the variety’s mature color, which is not always red.',
+      'Green shoulders alone do not mean the tomato is defective.',
+    ],
+  },
+] as const
 
 type ApiStatus = 'checking' | 'connected' | 'offline'
 
@@ -601,6 +649,35 @@ function App() {
             </div>
           </div>
         </section>
+
+        <details className="ripeness-guide">
+          <summary>
+            <span>
+              <span className="section-kicker">A QUICK VISUAL REFERENCE</span>
+              <strong>Ripeness cues for your produce</strong>
+            </span>
+            <span className="ripeness-summary-action">Show / hide</span>
+          </summary>
+          <p className="ripeness-disclaimer">
+            These are visual hints, not guarantees. Variety, lighting, and storage change
+            appearance; being unripe alone does not mean fruit is spoiled or defective.
+          </p>
+          <div className="ripeness-grid">
+            {RIPENESS_GUIDE.map((fruit) => (
+              <article className="ripeness-card" key={fruit.name}>
+                <h3><span aria-hidden="true">{fruit.emoji}</span> {fruit.name}</h3>
+                <div className="ripeness-cue-group">
+                  <h4>Less ripe signs</h4>
+                  <ul>{fruit.lessRipe.map((cue) => <li key={cue}>{cue}</li>)}</ul>
+                </div>
+                <div className="ripeness-cue-group">
+                  <h4>Riper signs</h4>
+                  <ul>{fruit.riper.map((cue) => <li key={cue}>{cue}</li>)}</ul>
+                </div>
+              </article>
+            ))}
+          </div>
+        </details>
       </main>
 
       <footer className="footer">

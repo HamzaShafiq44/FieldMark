@@ -19,6 +19,18 @@ FRUIT_VISUAL_GUIDANCE = (
     "areas. Deep cracks, catfacing scars, or a dark sunken blossom-end patch may be deformities. "
     "Minor dry scars or healed cracks alone are not defects. "
 )
+RIPENESS_VISUAL_GUIDANCE = (
+    "Ripeness is separate from spoilage and defects. Use these only as tentative visual context: "
+    "oranges may shift from greenish toward orange or yellow-orange, but some ripe varieties keep "
+    "green areas; peel shine, texture, and the stem button are not reliable by themselves. "
+    "Apples may shift from a green background toward cream or yellow as they ripen, but blush, "
+    "sheen, and background color vary by variety and finish. Bananas commonly change from green "
+    "toward yellow, and small brown sugar spots can be normal ripening rather than bruises. "
+    "Tomatoes often change from pale green toward their mature variety-specific color; green "
+    "shoulders can remain on some varieties. Lighting and cultivar affect all these cues. "
+    "Do not infer ripeness, flavor, or internal quality from color alone. Never label fruit "
+    "rotten or defective only because it appears unripe; unripe fruit may still be fresh. "
+)
 SYSTEM_PROMPT = (
     "You inspect one photo for a produce-grading app. Supported produce types are tomato, "
     "apple, banana, and orange. Reply with JSON only: "
@@ -32,6 +44,7 @@ SYSTEM_PROMPT = (
     "and curved with a crown; oranges are round citrus with a dimpled rind. "
     'If these cues are not clear enough, use "unknown" rather than guess. '
     + FRUIT_VISUAL_GUIDANCE
+    + RIPENESS_VISUAL_GUIDANCE
     + "This is photo-only: do not infer softness, firmness, odor, leakage, taste, or "
     "internal damage. "
     "Do not make food-safety claims or claim unseen mold spread. "

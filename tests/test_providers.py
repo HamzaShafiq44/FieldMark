@@ -11,6 +11,7 @@ from pydantic import SecretStr, ValidationError
 
 from app.ai.produce_groq import GroqVisionDetector
 from app.ai.produce_ollama import MAX_RESPONSE_BYTES, OllamaVisionDetector
+from app.ai.prompts import SYSTEM_PROMPT
 from app.ai.provider_factory import create_vision_detector
 from app.ai.providers import DetectionError
 from app.core.config import Settings
@@ -19,6 +20,12 @@ from app.core.config import Settings
 def _image() -> Image.Image:
     """Create an in-memory image for provider request tests."""
     return Image.new("RGB", (8, 8), color="orange")
+
+
+def test_system_prompt_distinguishes_unripe_from_spoiled() -> None:
+    """Include visible ripeness guidance without treating unripe fruit as defective."""
+    assert "some ripe varieties keep green areas" in SYSTEM_PROMPT
+    assert "unripe fruit may still be fresh" in SYSTEM_PROMPT
 
 
 def test_factory_selects_groq_from_configuration() -> None:
