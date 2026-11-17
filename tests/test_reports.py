@@ -242,6 +242,24 @@ def test_groq_report_writer_passes_context_and_validates_output(
     assert report.voice_note_relation is VoiceNoteRelation.ADDS_CONTEXT
 
 
+def test_report_request_has_distinct_farmer_and_qc_guidance() -> None:
+    """Send materially different wording instructions for both report audiences."""
+    result = inspection_service.inspect_produce(
+        _jpeg_bytes(),
+        detect=lambda _: Finding(
+            produce_type=ProduceType.APPLE,
+            condition=Condition.FRESH,
+            confidence=0.8,
+        ),
+    )
+    farmer = json.loads(groq_report._report_request(result, ReportUserType.FARMER, ""))
+    qc_operator = json.loads(groq_report._report_request(result, ReportUserType.QC_OPERATOR, ""))
+
+    assert "everyday, practical language" in farmer["audience_guidance"]
+    assert "quality-control language" in qc_operator["audience_guidance"]
+    assert farmer["audience_guidance"] != qc_operator["audience_guidance"]
+
+
 def test_groq_transcribes_optional_voice_note(monkeypatch: pytest.MonkeyPatch) -> None:
     """Send audio bytes to the configured Groq transcription model."""
     monkeypatch.setattr(settings, "groq_api_key", SecretStr("report-test-key"))
