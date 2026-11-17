@@ -1,6 +1,7 @@
 """Focused tests for report evidence, validation, and PDF persistence."""
 
 import json
+import re
 import sqlite3
 from collections.abc import Callable
 from io import BytesIO
@@ -124,6 +125,36 @@ def test_voice_note_is_transcribed_and_included_in_report(
 
     assert pdf.startswith(b"%PDF-")
     assert transcripts == ["Soft spot near the stem after transport."]
+
+
+def test_long_voice_note_flows_across_report_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep long but valid voice-note transcripts readable across natural page breaks."""
+    result = inspection_service.inspect_produce(
+        _jpeg_bytes(),
+        detect=lambda _: Finding(
+            produce_type=ProduceType.ORANGE,
+            condition=Condition.FRESH,
+            confidence=0.8,
+        ),
+    )
+    transcript = "Operator note about the fruit. " * 320
+    narrative = InspectionReportText(
+        summary="The image does not show a clear defect.",
+        findings=["No visible defect was confirmed."],
+        recommendations=["Re-inspect if the fruit changes."],
+        voice_note_relation=VoiceNoteRelation.ADDS_CONTEXT,
+    )
+    monkeypatch.setattr(report_service, "transcribe_voice_note", lambda *_: transcript)
+    monkeypatch.setattr(report_service, "write_inspection_report", lambda *_: narrative)
+
+    pdf = report_service.generate_inspection_report(
+        result.inspection_id,
+        ReportUserType.FARMER,
+        b"voice bytes",
+    )
+
+    page_count = len(re.findall(rb"/Type\s*/Page\b", pdf))
+    assert page_count >= 2
 
 
 def test_annotated_photo_marks_only_the_reported_region() -> None:
