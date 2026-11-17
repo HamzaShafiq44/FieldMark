@@ -77,6 +77,7 @@ def test_report_source_and_pdf_are_persisted(monkeypatch: pytest.MonkeyPatch) ->
     pdf = report_service.generate_inspection_report(result.inspection_id, ReportUserType.FARMER)
 
     assert pdf.startswith(b"%PDF-")
+    assert len(re.findall(rb"/Type\s*/Page\b", pdf)) == 1
     assert repository.get_report_pdf(result.inspection_id) == pdf
     assert repository.list_history(10, 0)[0].report_available
 
@@ -127,8 +128,8 @@ def test_voice_note_is_transcribed_and_included_in_report(
     assert transcripts == ["Soft spot near the stem after transport."]
 
 
-def test_long_voice_note_flows_across_report_pages(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep long but valid voice-note transcripts readable across natural page breaks."""
+def test_report_with_long_voice_note_fits_on_one_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the maximum supported transcript and narrative within one readable page."""
     result = inspection_service.inspect_produce(
         _jpeg_bytes(),
         detect=lambda _: Finding(
@@ -137,12 +138,23 @@ def test_long_voice_note_flows_across_report_pages(monkeypatch: pytest.MonkeyPat
             confidence=0.8,
         ),
     )
-    transcript = "Operator note about the fruit. " * 320
+    transcript = ("Operator note about the fruit. " * 25)[
+        : report_service.MAX_TRANSCRIPT_CHARACTERS
+    ]
     narrative = InspectionReportText(
-        summary="The image does not show a clear defect.",
-        findings=["No visible defect was confirmed."],
-        recommendations=["Re-inspect if the fruit changes."],
-        voice_note_relation=VoiceNoteRelation.ADDS_CONTEXT,
+        summary=("The image does not show a clear defect. " * 10)[:300],
+        findings=[
+            ("A possible mark is visible on the fruit. " * 10)[:180],
+            ("The affected area should be checked carefully. " * 10)[:180],
+            ("The image alone cannot confirm the cause. " * 10)[:180],
+        ],
+        recommendations=[
+            ("Check the affected area before sorting. " * 10)[:140],
+            ("Keep this fruit separate until checked. " * 10)[:140],
+            ("Re-inspect the fruit before sale. " * 10)[:140],
+        ],
+        voice_note_relation=VoiceNoteRelation.CONFLICTS,
+        voice_note_conflict=("The note differs from what is visible in the photo. " * 10)[:240],
     )
     monkeypatch.setattr(report_service, "transcribe_voice_note", lambda *_: transcript)
     monkeypatch.setattr(report_service, "write_inspection_report", lambda *_: narrative)
@@ -154,7 +166,38 @@ def test_long_voice_note_flows_across_report_pages(monkeypatch: pytest.MonkeyPat
     )
 
     page_count = len(re.findall(rb"/Type\s*/Page\b", pdf))
-    assert page_count >= 2
+    assert page_count == 1
+
+
+def test_transcript_too_long_for_one_page_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reject transcripts that cannot be fully included in a one-page report."""
+    result = inspection_service.inspect_produce(
+        _jpeg_bytes(),
+        detect=lambda _: Finding(
+            produce_type=ProduceType.ORANGE,
+            condition=Condition.FRESH,
+            confidence=0.8,
+        ),
+    )
+    monkeypatch.setattr(
+        report_service,
+        "transcribe_voice_note",
+        lambda *_: "x" * (report_service.MAX_TRANSCRIPT_CHARACTERS + 1),
+    )
+    monkeypatch.setattr(
+        report_service,
+        "write_inspection_report",
+        Mock(
+            side_effect=AssertionError("Long transcript should be rejected before report writing.")
+        ),
+    )
+
+    with pytest.raises(report_service.InspectionReportInputError, match="one-page report"):
+        report_service.generate_inspection_report(
+            result.inspection_id,
+            ReportUserType.FARMER,
+            b"voice bytes",
+        )
 
 
 def test_annotated_photo_marks_only_the_reported_region() -> None:

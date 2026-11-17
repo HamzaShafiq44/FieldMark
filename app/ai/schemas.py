@@ -131,17 +131,17 @@ class InspectionReportText(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    summary: str = Field(min_length=1, max_length=600)
-    findings: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field(
+    summary: str = Field(min_length=1, max_length=300)
+    findings: list[Annotated[str, Field(min_length=1, max_length=180)]] = Field(
         min_length=1,
-        max_length=5,
+        max_length=3,
     )
-    recommendations: list[Annotated[str, Field(min_length=1, max_length=240)]] = Field(
+    recommendations: list[Annotated[str, Field(min_length=1, max_length=140)]] = Field(
         min_length=1,
-        max_length=4,
+        max_length=3,
     )
     voice_note_relation: VoiceNoteRelation
-    voice_note_conflict: str = Field(default="", max_length=500)
+    voice_note_conflict: str = Field(default="", max_length=240)
 
     @model_validator(mode="after")
     def require_conflict_explanation(self) -> "InspectionReportText":

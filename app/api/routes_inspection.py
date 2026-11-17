@@ -22,6 +22,7 @@ from app.services.inspection_service import (
 from app.services.report_service import (
     InspectionReportAIError,
     InspectionReportError,
+    InspectionReportInputError,
     InspectionReportUnavailableError,
     generate_inspection_report,
     get_inspection_report,
@@ -138,6 +139,8 @@ async def generate_inspection_report_route(
         )
     except InspectionReportUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except InspectionReportInputError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except InspectionReportAIError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except InspectionReportError as exc:

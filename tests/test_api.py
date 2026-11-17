@@ -232,6 +232,28 @@ def test_generate_report_route_returns_pdf(monkeypatch: pytest.MonkeyPatch) -> N
     assert response.content == b"%PDF-test"
 
 
+def test_report_route_rejects_transcript_that_cannot_fit_one_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return a client error with guidance when a transcript is too long."""
+
+    def reject_report(*_: object) -> bytes:
+        raise routes_inspection.InspectionReportInputError("Use a shorter note.")
+
+    monkeypatch.setattr(
+        routes_inspection,
+        "generate_inspection_report",
+        reject_report,
+    )
+    response = client.post(
+        "/inspections/00000000-0000-0000-0000-000000000001/report",
+        data={"user_type": "farmer"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Use a shorter note."
+
+
 def test_report_route_rejects_non_farmer_user_type() -> None:
     """Keep report generation limited to the farmer audience."""
     response = client.post(

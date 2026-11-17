@@ -638,8 +638,8 @@ function App() {
                   <div>
                     <h3>Inspection report</h3>
                     <p>
-                      Download a farmer-friendly PDF with the original photo and any reported
-                      defect location. A supplied voice note is transcribed and included.
+                      Download a one-page, farmer-friendly PDF with both photos and the inspection
+                      details. Keep voice notes brief so the full transcript fits.
                     </p>
                   </div>
                   <label>

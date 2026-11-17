@@ -17,7 +17,7 @@ from app.storage.inspection_repository import (
 )
 
 LOGGER = logging.getLogger(__name__)
-MAX_TRANSCRIPT_CHARACTERS = 12_000
+MAX_TRANSCRIPT_CHARACTERS = 800
 NO_REPORT_SOURCE_MESSAGE = "The original photo is unavailable for this inspection report."
 
 
@@ -27,6 +27,10 @@ class InspectionReportError(RuntimeError):
 
 class InspectionReportUnavailableError(InspectionReportError):
     """Raised when an inspection lacks the source data required for a report."""
+
+
+class InspectionReportInputError(InspectionReportError):
+    """Raised when report input cannot fit the one-page report format."""
 
 
 class InspectionReportAIError(InspectionReportError):
@@ -105,7 +109,9 @@ def _transcribe(voice_note: bytes | None, filename: str) -> str:
     except ReportAIError as exc:
         raise InspectionReportAIError(str(exc)) from exc
     if len(transcript) > MAX_TRANSCRIPT_CHARACTERS:
-        raise InspectionReportAIError("Voice-note transcript is too long to include in a report.")
+        raise InspectionReportInputError(
+            "Voice note is too long for the one-page report. Please use a shorter voice note."
+        )
     return transcript
 
 

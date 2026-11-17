@@ -18,8 +18,11 @@ FARMER_AUDIENCE_GUIDANCE: str = (
 )
 REPORT_SYSTEM_PROMPT = (
     "Write an inspection report from the supplied structured inspection result and optional "
-    "voice-note transcript. Return JSON only: summary is a string; findings and recommendations "
-    "are arrays of strings; voice_note_relation and voice_note_conflict are strings. "
+    "voice-note transcript. Keep the report concise enough for one page. Return JSON only: "
+    "summary is a string of at most 300 characters; findings are 1 to 3 strings of at most "
+    "180 characters each; recommendations are 1 to 3 strings of at most 140 characters each; "
+    "voice_note_relation and voice_note_conflict are strings, with the conflict at most "
+    "240 characters. "
     "voice_note_relation must be one of not_provided, supports, adds_context, or conflicts. "
     "Follow the farmer_audience_guidance in the input for the summary, findings, and "
     "recommendations. Describe visible signs plainly and distinguish possible findings from "
@@ -33,7 +36,8 @@ REPORT_SYSTEM_PROMPT = (
     "required, describe detections as possible and unconfirmed rather than stating them as facts."
 )
 REPORT_USER_PROMPT = (
-    "Write a concise report narrative. Recommendations must include the supplied recommended "
+    "Write a short, farmer-friendly report narrative. Recommendations must include the "
+    "supplied recommended "
     "action and must not introduce unsupported treatments or diagnoses."
 )
 MODEL_UNAVAILABLE_MESSAGE = "The configured Groq model is unavailable."
