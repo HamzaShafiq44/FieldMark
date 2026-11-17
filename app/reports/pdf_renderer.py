@@ -1,7 +1,6 @@
 """Build professional PDF reports from validated inspection data."""
 
 from datetime import datetime
-from functools import partial
 from io import BytesIO
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -36,8 +35,6 @@ PAGE_BOTTOM_MARGIN = 0.57 * inch
 CONTENT_WIDTH = A4[0] - 2 * PAGE_MARGIN
 PHOTO_WIDTH = CONTENT_WIDTH / 2 - 0.18 * inch
 PHOTO_HEIGHT = 1.45 * inch
-HEADER_TEXT_Y = A4[1] - 0.37 * inch
-HEADER_RULE_Y = A4[1] - 0.53 * inch
 FOOTER_RULE_Y = 0.5 * inch
 FOOTER_TEXT_Y = 0.3 * inch
 IMAGE_JPEG_QUALITY = 90
@@ -89,8 +86,7 @@ def build_inspection_pdf(
         original_image,
     )
     one_page_story = KeepInFrame(document.width, document.height, story, mode="shrink")
-    page_chrome = partial(_draw_page_chrome, report_id=report_id)
-    document.build([one_page_story], onFirstPage=page_chrome)
+    document.build([one_page_story], onFirstPage=_draw_page_chrome)
     return buffer.getvalue()
 
 
@@ -103,7 +99,7 @@ def _create_document(buffer: BytesIO, report_id: str) -> SimpleDocTemplate:
         leftMargin=PAGE_MARGIN,
         topMargin=PAGE_TOP_MARGIN,
         bottomMargin=PAGE_BOTTOM_MARGIN,
-        title=f"Inspection report {report_id}",
+        title=f"Inspection Report {report_id}",
         author="Fieldmark",
     )
 
@@ -190,7 +186,7 @@ def _opening_sections(
     story: list[Flowable] = [
         _group(
             [
-                _paragraph("Produce inspection report", styles["title"]),
+                _paragraph("Inspection Report", styles["title"]),
                 _outcome_panel(styles, result),
                 _metadata_table(styles, report_id, report_date, inspection_date, user_type),
             ],
@@ -221,7 +217,7 @@ def _evidence_sections(
         _group(
             [
                 _paragraph("Photo evidence", styles["section"]),
-                _photo_table(styles, original_image, result.bbox),
+                _photo_table(styles, original_image, result),
             ],
         )
     )
@@ -353,18 +349,23 @@ def _metadata_table(
 def _photo_table(
     styles: dict[str, ParagraphStyle],
     original_image: bytes,
-    bbox: BBox | None,
+    result: InspectionResult,
 ) -> Table:
-    """Place original and annotated photo previews side by side."""
-    annotated_image = annotate_photo(original_image, bbox)
+    """Include an annotated preview only when a reported defect has a bounding box."""
     original = _pdf_image(original_image)
+    if not result.defect_types or result.bbox is None:
+        rows = [[original], [_paragraph("ORIGINAL PHOTO", styles["panel_label"])]]
+        table = Table(rows, colWidths=[CONTENT_WIDTH], hAlign="LEFT", splitByRow=False)
+        table.setStyle(_photo_table_style())
+        return table
+
+    annotated_image = annotate_photo(original_image, result.bbox)
     annotated = _pdf_image(annotated_image)
-    caption = "Model-reported box" if bbox is not None else "No model location was provided"
     rows = [
         [original, annotated],
         [
             _paragraph("ORIGINAL PHOTO", styles["panel_label"]),
-            _paragraph(f"ANNOTATED PHOTO  /  {caption.upper()}", styles["panel_label"]),
+            _paragraph("ANNOTATED PHOTO  /  MODEL-REPORTED BOX", styles["panel_label"]),
         ],
     ]
     table = Table(
@@ -562,21 +563,12 @@ def _needs_manual_review(result: InspectionResult) -> bool:
 def _draw_page_chrome(
     canvas: Canvas,
     document: SimpleDocTemplate,
-    report_id: str,
 ) -> None:
-    """Draw a repeating report header and page-number footer."""
+    """Draw the report footer and page number."""
     canvas.saveState()
     canvas.setStrokeColor(LINE)
     canvas.setFont(REGULAR_FONT_NAME, 8)
     canvas.setFillColor(MUTED)
-    canvas.drawString(PAGE_MARGIN, HEADER_TEXT_Y, "FIELDMARK  /  PRODUCE QUALITY INSPECTION")
-    canvas.drawRightString(
-        A4[0] - PAGE_MARGIN,
-        HEADER_TEXT_Y,
-        f"REPORT {report_id[:8].upper()}",
-    )
-    canvas.setStrokeColor(LINE)
-    canvas.line(PAGE_MARGIN, HEADER_RULE_Y, A4[0] - PAGE_MARGIN, HEADER_RULE_Y)
     canvas.line(PAGE_MARGIN, FOOTER_RULE_Y, A4[0] - PAGE_MARGIN, FOOTER_RULE_Y)
     canvas.drawString(PAGE_MARGIN, FOOTER_TEXT_Y, "Fieldmark  |  Indicative quality guidance")
     canvas.drawRightString(A4[0] - PAGE_MARGIN, FOOTER_TEXT_Y, f"Page {document.page}")

@@ -18,6 +18,7 @@ from app.ai import groq_report
 from app.ai.groq_report import MODEL_UNAVAILABLE_MESSAGE, RATE_LIMITED_MESSAGE, _provider_failure
 from app.ai.schemas import (
     Condition,
+    DefectType,
     Finding,
     InspectionReportText,
     InspectionResult,
@@ -78,8 +79,32 @@ def test_report_source_and_pdf_are_persisted(monkeypatch: pytest.MonkeyPatch) ->
 
     assert pdf.startswith(b"%PDF-")
     assert len(re.findall(rb"/Type\s*/Page\b", pdf)) == 1
+    assert len(re.findall(rb"/Subtype\s*/Image\b", pdf)) == 1
+    assert b"/Title (Inspection Report" in pdf
     assert repository.get_report_pdf(result.inspection_id) == pdf
     assert repository.list_history(10, 0)[0].report_available
+
+
+def test_annotated_photo_is_included_for_reported_defect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Include the second photo only when a defect and its location are reported."""
+    result = inspection_service.inspect_produce(
+        _jpeg_bytes(),
+        detect=lambda _: Finding(
+            produce_type=ProduceType.APPLE,
+            condition=Condition.FRESH,
+            confidence=0.8,
+            defect_types=[DefectType.BRUISE],
+            severity=Severity.LOW,
+            bbox=(0.2, 0.2, 0.8, 0.8),
+        ),
+    )
+    monkeypatch.setattr(report_service, "write_inspection_report", lambda *_: _report_text())
+
+    pdf = report_service.generate_inspection_report(result.inspection_id, ReportUserType.FARMER)
+
+    assert len(re.findall(rb"/Subtype\s*/Image\b", pdf)) == 2
 
 
 def test_voice_note_is_transcribed_and_included_in_report(
