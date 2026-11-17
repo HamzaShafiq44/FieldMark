@@ -7,10 +7,12 @@ import {
   ImagePlus,
   Leaf,
   LoaderCircle,
+  Moon,
   RefreshCw,
   ScanLine,
   ShieldCheck,
   Sparkles,
+  Sun,
   Upload,
   X,
 } from 'lucide-react'
@@ -35,6 +37,7 @@ import {
 } from './services/api'
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+const THEME_STORAGE_KEY = 'fieldmark-theme'
 const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const ACCEPTED_IMAGE_EXTENSIONS = '.jpg, .jpeg, .png, .webp'
 const PRODUCE_LABELS: Record<ProduceType, string> = {
@@ -106,6 +109,13 @@ const RIPENESS_GUIDE = [
 ] as const
 
 type ApiStatus = 'checking' | 'connected' | 'offline'
+type Theme = 'light' | 'dark'
+
+function getInitialTheme(): Theme {
+  const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY)
+  if (savedTheme === 'light' || savedTheme === 'dark') return savedTheme
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
 
 function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
@@ -131,6 +141,12 @@ function App() {
   const [history, setHistory] = useState<InspectionHistoryItem[]>([])
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [isHistoryLoading, setIsHistoryLoading] = useState(true)
+  const [theme, setTheme] = useState<Theme>(getInitialTheme)
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme)
+  }, [theme])
 
   useEffect(
     () => () => {
@@ -280,6 +296,16 @@ function App() {
         </a>
         <div className="topbar-right">
           <span className="topbar-note">FIELD INSPECTION / 01</span>
+          <button
+            className="theme-toggle"
+            type="button"
+            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            aria-pressed={theme === 'dark'}
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          >
+            {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+            <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+          </button>
           <div className={`connection-pill connection-${apiStatus}`}>
             <span className="connection-dot" />
             {apiStatus === 'checking'

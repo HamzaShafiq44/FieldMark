@@ -2,8 +2,8 @@
 
 :root {
   font-family: 'DM Sans', sans-serif;
-  color: #233b2d;
-  background: #f7f8f2;
+  color: var(--forest);
+  background: var(--paper);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -22,6 +22,19 @@
   --line: #e5e9df;
   --display: 'Manrope', sans-serif;
   --serif: 'DM Serif Display', Georgia, serif;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --paper: #141c17;
+  --white: #202c24;
+  --forest: #edf5eb;
+  --forest-2: #c3d6c1;
+  --leaf: #a1c587;
+  --lime: #c8e683;
+  --pale-green: #2d3b31;
+  --muted: #a9b7a9;
+  --line: #39483e;
 }
 
 * {
