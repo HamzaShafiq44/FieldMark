@@ -232,6 +232,15 @@ def test_generate_report_route_returns_pdf(monkeypatch: pytest.MonkeyPatch) -> N
     assert response.content == b"%PDF-test"
 
 
+def test_report_route_rejects_non_farmer_user_type() -> None:
+    """Keep report generation limited to the farmer audience."""
+    response = client.post(
+        "/inspections/00000000-0000-0000-0000-000000000001/report",
+        data={"user_type": "qc_operator"},
+    )
+    assert response.status_code == 422
+
+
 def test_report_route_rejects_unsupported_voice_note() -> None:
     """Reject voice-note formats that the transcription provider cannot accept."""
     response = client.post(

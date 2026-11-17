@@ -5,7 +5,6 @@ export type Verdict = 'pass' | 'defect' | 'needs_review'
 export type Grade = 'A' | 'B' | 'Reject' | 'Needs manual review'
 export type Severity = 'none' | 'low' | 'medium' | 'high'
 export type DefectType = 'bruise' | 'rot' | 'mold' | 'deformity'
-export type ReportUserType = 'farmer' | 'qc_operator'
 export type BoundingBox = [number, number, number, number]
 
 export interface InspectionResult {
@@ -92,11 +91,10 @@ export function inspectionThumbnailUrl(inspectionId: string): string {
 
 export async function createInspectionReport(
   inspectionId: string,
-  userType: ReportUserType,
   voiceNote?: File,
 ): Promise<Blob> {
   const formData = new FormData()
-  formData.append('user_type', userType)
+  formData.append('user_type', 'farmer')
   if (voiceNote) formData.append('voice_note', voiceNote)
 
   const response = await fetch(reportUrl(inspectionId), {

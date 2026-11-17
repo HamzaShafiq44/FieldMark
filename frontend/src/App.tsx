@@ -40,7 +40,6 @@ import {
   type InspectionHistoryItem,
   type InspectionResult,
   type ProduceType,
-  type ReportUserType,
 } from './services/api'
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -162,7 +161,6 @@ function App() {
   const [isHistoryLoading, setIsHistoryLoading] = useState(true)
   const [isClearingHistory, setIsClearingHistory] = useState(false)
   const [voiceNoteFile, setVoiceNoteFile] = useState<File | null>(null)
-  const [reportUserType, setReportUserType] = useState<ReportUserType>('farmer')
   const [reportActionId, setReportActionId] = useState<string | null>(null)
   const [reportError, setReportError] = useState<string | null>(null)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
@@ -320,7 +318,7 @@ function App() {
     setReportActionId(inspectionId)
     setReportError(null)
     try {
-      const pdf = await createInspectionReport(inspectionId, reportUserType, voiceNote)
+      const pdf = await createInspectionReport(inspectionId, voiceNote)
       downloadPdf(pdf, inspectionId)
       if (voiceNote) {
         setVoiceNoteFile(null)
@@ -640,23 +638,10 @@ function App() {
                   <div>
                     <h3>Inspection report</h3>
                     <p>
-                      Download a tailored PDF with the original photo and any reported defect
-                      location. A supplied voice note is transcribed and saved in the report.
+                      Download a farmer-friendly PDF with the original photo and any reported
+                      defect location. A supplied voice note is transcribed and included.
                     </p>
                   </div>
-                  <label>
-                    Report for
-                    <select
-                      value={reportUserType}
-                      onChange={(event) => {
-                        const selected = event.currentTarget.value
-                        setReportUserType(selected === 'qc_operator' ? 'qc_operator' : 'farmer')
-                      }}
-                    >
-                      <option value="farmer">Farmer</option>
-                      <option value="qc_operator">QC operator</option>
-                    </select>
-                  </label>
                   <label>
                     Optional voice note
                     <input

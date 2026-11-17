@@ -50,10 +50,9 @@ class ProduceType(StrEnum):
 
 
 class ReportUserType(StrEnum):
-    """Report audience that controls the report's language and emphasis."""
+    """Supported audience for inspection reports."""
 
     FARMER = "farmer"
-    QC_OPERATOR = "qc_operator"
 
 
 class VoiceNoteRelation(StrEnum):

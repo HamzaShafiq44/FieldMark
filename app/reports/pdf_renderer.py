@@ -53,7 +53,6 @@ DEFECT_BACKGROUND = colors.HexColor("#fbe9e6")
 DEFECT_BORDER = colors.HexColor("#bd4b3b")
 USER_TYPE_LABELS = {
     ReportUserType.FARMER: "Farmer",
-    ReportUserType.QC_OPERATOR: "QC operator",
 }
 FONT_DIRECTORY = Path(reportlab.__file__).parent / "fonts"
 REGULAR_FONT_NAME = "FieldmarkVera"

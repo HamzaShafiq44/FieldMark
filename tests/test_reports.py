@@ -106,7 +106,7 @@ def test_voice_note_is_transcribed_and_included_in_report(
         user_type: ReportUserType,
         transcript: str,
     ) -> InspectionReportText:
-        assert user_type is ReportUserType.QC_OPERATOR
+        assert user_type is ReportUserType.FARMER
         transcripts.append(transcript)
         return InspectionReportText(
             summary="The voice note adds context to the visual check.",
@@ -118,7 +118,7 @@ def test_voice_note_is_transcribed_and_included_in_report(
     monkeypatch.setattr(report_service, "write_inspection_report", write_report)
     pdf = report_service.generate_inspection_report(
         result.inspection_id,
-        ReportUserType.QC_OPERATOR,
+        ReportUserType.FARMER,
         b"voice bytes",
         "voice-note.wav",
     )
@@ -238,12 +238,13 @@ def test_groq_report_writer_passes_context_and_validates_output(
     context = json.loads(request["messages"][1]["content"])
     assert request["model"] == "qwen/qwen3.8-27b"
     assert context["user_type"] == "farmer"
+    assert "everyday, practical language" in context["farmer_audience_guidance"]
     assert context["voice_note_transcript"] == "I noticed a soft spot."
     assert report.voice_note_relation is VoiceNoteRelation.ADDS_CONTEXT
 
 
-def test_report_request_has_distinct_farmer_and_qc_guidance() -> None:
-    """Send materially different wording instructions for both report audiences."""
+def test_report_request_instructs_plain_farmer_friendly_language() -> None:
+    """Keep the report instructions focused on farmers and easy-to-understand wording."""
     result = inspection_service.inspect_produce(
         _jpeg_bytes(),
         detect=lambda _: Finding(
@@ -253,11 +254,9 @@ def test_report_request_has_distinct_farmer_and_qc_guidance() -> None:
         ),
     )
     farmer = json.loads(groq_report._report_request(result, ReportUserType.FARMER, ""))
-    qc_operator = json.loads(groq_report._report_request(result, ReportUserType.QC_OPERATOR, ""))
 
-    assert "everyday, practical language" in farmer["audience_guidance"]
-    assert "quality-control language" in qc_operator["audience_guidance"]
-    assert farmer["audience_guidance"] != qc_operator["audience_guidance"]
+    assert farmer["user_type"] == "farmer"
+    assert "everyday, practical language" in farmer["farmer_audience_guidance"]
 
 
 def test_groq_transcribes_optional_voice_note(monkeypatch: pytest.MonkeyPatch) -> None:

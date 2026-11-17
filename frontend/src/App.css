@@ -2030,7 +2030,6 @@ main,
   font-weight: 650;
 }
 
-.report-controls select,
 .report-controls input[type='file'] {
   width: 100%;
   min-width: 0;
@@ -2099,7 +2098,6 @@ main,
   color: var(--forest);
 }
 
-:root[data-theme='dark'] .report-controls select,
 :root[data-theme='dark'] .report-controls input[type='file'] {
   border-color: var(--line);
   color: var(--forest);
