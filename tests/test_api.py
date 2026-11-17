@@ -67,6 +67,8 @@ def test_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert history_item["inspection_id"] == response.json()["inspection_id"]
     assert history_item["produce_type"] == "apple"
     assert history_item["verdict"] == "pass"
+    assert history_item["report_source_available"] is True
+    assert history_item["report_available"] is False
     thumbnail = client.get(history_item["thumbnail_url"])
     assert thumbnail.status_code == 200
     assert thumbnail.headers["content-type"] == "image/jpeg"
@@ -174,3 +176,62 @@ def test_finding_limits_visual_observation_length() -> None:
                 "visual_observation": "x" * 241,
             }
         )
+
+
+def test_generate_report_route_returns_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Return generated report bytes as an attachment."""
+    monkeypatch.setattr(
+        routes_inspection,
+        "generate_inspection_report",
+        lambda *_: b"%PDF-test",
+    )
+    inspection_id = "00000000-0000-0000-0000-000000000001"
+
+    response = client.post(
+        f"/inspections/{inspection_id}/report",
+        data={"user_type": "farmer"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert "attachment" in response.headers["content-disposition"]
+    assert response.content == b"%PDF-test"
+
+
+def test_report_route_rejects_unsupported_voice_note() -> None:
+    """Reject voice-note formats that the transcription provider cannot accept."""
+    response = client.post(
+        "/inspections/00000000-0000-0000-0000-000000000001/report",
+        data={"user_type": "farmer"},
+        files={"voice_note": ("note.txt", b"audio", "text/plain")},
+    )
+    assert response.status_code == 400
+
+
+def test_report_route_rejects_oversized_voice_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reject audio uploads above the configured limit before transcription."""
+    monkeypatch.setattr(settings, "max_voice_note_bytes", 3)
+    response = client.post(
+        "/inspections/00000000-0000-0000-0000-000000000001/report",
+        data={"user_type": "farmer"},
+        files={"voice_note": ("note.wav", b"audio", "audio/wav")},
+    )
+    assert response.status_code == 413
+
+
+def test_download_report_returns_404_when_missing() -> None:
+    """Return not found when no PDF has been generated for the inspection."""
+    response = client.get(
+        "/inspections/00000000-0000-0000-0000-000000000001/report",
+    )
+    assert response.status_code == 404
+
+
+def test_generate_report_rejects_inspection_without_saved_source() -> None:
+    """Explain that reports cannot be reconstructed without the original photo."""
+    response = client.post(
+        "/inspections/00000000-0000-0000-0000-000000000001/report",
+        data={"user_type": "farmer"},
+    )
+    assert response.status_code == 409
+    assert "original photo is unavailable" in response.json()["detail"]

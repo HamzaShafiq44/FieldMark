@@ -9,27 +9,33 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+DEFAULT_GROQ_REPORT_MODEL = DEFAULT_GROQ_VISION_MODEL
+DEFAULT_GROQ_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
 DEFAULT_OLLAMA_VISION_MODEL = "qwen2.5vl:7b"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_URL_SCHEMES = frozenset({"http", "https"})
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_VOICE_NOTE_BYTES = 25 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 ALLOWED_FORMATS = ("JPEG", "PNG", "WEBP")
 DEFAULT_INSPECTION_DB_PATH = BASE_DIR / "data" / "inspections.sqlite3"
 
 
 class Settings(BaseSettings):
-    """Runtime configuration for image processing and vision providers."""
+    """Runtime configuration for image analysis, report writing, and transcription."""
 
     model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", extra="ignore")
 
     vision_provider: Literal["groq", "ollama"] = "groq"
     groq_api_key: SecretStr = SecretStr("")
     groq_vision_model: str = DEFAULT_GROQ_VISION_MODEL
+    groq_report_model: str = DEFAULT_GROQ_REPORT_MODEL
+    groq_transcription_model: str = DEFAULT_GROQ_TRANSCRIPTION_MODEL
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
     ollama_vision_model: str = DEFAULT_OLLAMA_VISION_MODEL
     inspection_db_path: Path = DEFAULT_INSPECTION_DB_PATH
     max_image_bytes: int = MAX_IMAGE_BYTES
+    max_voice_note_bytes: int = MAX_VOICE_NOTE_BYTES
     max_image_pixels: int = MAX_IMAGE_PIXELS
     allowed_formats: tuple[str, ...] = ALLOWED_FORMATS
 

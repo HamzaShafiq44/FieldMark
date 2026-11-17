@@ -190,14 +190,16 @@ def inspect_produce(
         verdict_notes=_verdict_notes(finding, grade_value, verdict_value),
         recommended_action=action,
     )
-    save_inspection_history(result, image)
+    save_inspection_history(result, image, data)
     return result
 
 
-def save_inspection_history(result: InspectionResult, image: Image.Image) -> None:
-    """Persist an inspection result and its thumbnail."""
+def save_inspection_history(
+    result: InspectionResult, image: Image.Image, original_image: bytes
+) -> None:
+    """Persist an inspection result, original photo, and thumbnail."""
     try:
-        InspectionRepository(settings.inspection_db_path).save(result, image)
+        InspectionRepository(settings.inspection_db_path).save(result, image, original_image)
     except HistoryStorageError as exc:
         raise InspectionStorageError(str(exc)) from exc
 

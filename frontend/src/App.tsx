@@ -4,6 +4,8 @@ import {
   Check,
   CircleAlert,
   Clock3,
+  Download,
+  FileText,
   ImagePlus,
   Leaf,
   LoaderCircle,
@@ -28,15 +30,20 @@ import './App.css'
 import {
   ApiError,
   checkApiHealth,
+  createInspectionReport,
+  downloadInspectionReport,
   inspectionThumbnailUrl,
   inspectProduce,
   listInspectionHistory,
   type InspectionHistoryItem,
   type InspectionResult,
   type ProduceType,
+  type ReportUserType,
 } from './services/api'
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+const MAX_VOICE_NOTE_BYTES = 25 * 1024 * 1024
+const PDF_URL_REVOKE_DELAY_MS = 1_000
 const THEME_STORAGE_KEY = 'fieldmark-theme'
 const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const ACCEPTED_IMAGE_EXTENSIONS = '.jpg, .jpeg, .png, .webp'
@@ -128,8 +135,18 @@ function formatInspectionDate(value: string): string {
   }).format(new Date(value))
 }
 
+function downloadPdf(pdf: Blob, inspectionId: string): void {
+  const url = URL.createObjectURL(pdf)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `fieldmark-inspection-${inspectionId}.pdf`
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), PDF_URL_REVOKE_DELAY_MS)
+}
+
 function App() {
   const cameraInput = useRef<HTMLInputElement>(null)
+  const voiceNoteInput = useRef<HTMLInputElement>(null)
   const previewUrlRef = useRef<string | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -141,6 +158,10 @@ function App() {
   const [history, setHistory] = useState<InspectionHistoryItem[]>([])
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [isHistoryLoading, setIsHistoryLoading] = useState(true)
+  const [voiceNoteFile, setVoiceNoteFile] = useState<File | null>(null)
+  const [reportUserType, setReportUserType] = useState<ReportUserType>('farmer')
+  const [reportActionId, setReportActionId] = useState<string | null>(null)
+  const [reportError, setReportError] = useState<string | null>(null)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
 
   useEffect(() => {
@@ -228,6 +249,9 @@ function App() {
     setPreviewUrl(previewUrlRef.current)
     setFile(selected)
     setResult(null)
+    setVoiceNoteFile(null)
+    if (voiceNoteInput.current) voiceNoteInput.current.value = ''
+    setReportError(null)
     setError(null)
   }, [])
 
@@ -250,6 +274,9 @@ function App() {
     setIsLoading(true)
     setError(null)
     setResult(null)
+    setVoiceNoteFile(null)
+    if (voiceNoteInput.current) voiceNoteInput.current.value = ''
+    setReportError(null)
     try {
       const inspection = await inspectProduce(file)
       setResult(inspection)
@@ -279,7 +306,43 @@ function App() {
     setPreviewUrl(null)
     setFile(null)
     setResult(null)
+    setVoiceNoteFile(null)
+    if (voiceNoteInput.current) voiceNoteInput.current.value = ''
+    setReportError(null)
     setError(null)
+  }
+
+  const handleGenerateReport = async (inspectionId: string, voiceNote?: File) => {
+    if (reportActionId) return
+    setReportActionId(inspectionId)
+    setReportError(null)
+    try {
+      const pdf = await createInspectionReport(inspectionId, reportUserType, voiceNote)
+      downloadPdf(pdf, inspectionId)
+      if (voiceNote) {
+        setVoiceNoteFile(null)
+        if (voiceNoteInput.current) voiceNoteInput.current.value = ''
+      }
+      void refreshHistory()
+    } catch (caught: unknown) {
+      setReportError(caught instanceof Error ? caught.message : 'PDF report could not be generated.')
+    } finally {
+      setReportActionId(null)
+    }
+  }
+
+  const handleDownloadReport = async (inspectionId: string) => {
+    if (reportActionId) return
+    setReportActionId(inspectionId)
+    setReportError(null)
+    try {
+      const pdf = await downloadInspectionReport(inspectionId)
+      downloadPdf(pdf, inspectionId)
+    } catch (caught: unknown) {
+      setReportError(caught instanceof Error ? caught.message : 'PDF report could not be downloaded.')
+    } finally {
+      setReportActionId(null)
+    }
   }
 
   return (
@@ -461,6 +524,9 @@ function App() {
             <p className="button-caption">
               <Sparkles size={13} /> AI-assisted visual grading · usually under 10 seconds
             </p>
+            <p className="upload-retention-note">
+              Original photos are stored with inspection history so PDF reports can include them.
+            </p>
           </section>
 
           <section className={`result-panel ${result ? `result-${result.verdict}` : ''}`} aria-live="polite">
@@ -506,23 +572,6 @@ function App() {
                   </div>
                 </div>
 
-                <div className="confidence-block">
-                  <div className="confidence-head">
-                    <span>MODEL CONFIDENCE</span>
-                    <strong>{result.confidence === null ? '—' : `${Math.round(result.confidence * 100)}%`}</strong>
-                  </div>
-                  <div
-                    className="confidence-track"
-                    role="meter"
-                    aria-label="Model confidence"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={result.confidence === null ? 0 : Math.round(result.confidence * 100)}
-                  >
-                    <span style={{ width: `${(result.confidence ?? 0) * 100}%` }} />
-                  </div>
-                </div>
-
                 <div className="details-grid">
                   <div className="detail-cell">
                     <span className="result-label">VISIBLE DEFECTS</span>
@@ -560,6 +609,61 @@ function App() {
                 </div>
                 <p className="result-disclaimer">{result.disclaimer}</p>
                 <p className="inspection-id">INSPECTION {result.inspection_id.slice(0, 8).toUpperCase()}</p>
+                <section className="report-controls" aria-label="PDF inspection report">
+                  <div>
+                    <h3>Inspection report</h3>
+                    <p>
+                      Download a tailored PDF with the original photo and any reported defect
+                      location. A supplied voice note is transcribed and saved in the report.
+                    </p>
+                  </div>
+                  <label>
+                    Report for
+                    <select
+                      value={reportUserType}
+                      onChange={(event) => {
+                        const selected = event.currentTarget.value
+                        setReportUserType(selected === 'qc_operator' ? 'qc_operator' : 'farmer')
+                      }}
+                    >
+                      <option value="farmer">Farmer</option>
+                      <option value="qc_operator">QC operator</option>
+                    </select>
+                  </label>
+                  <label>
+                    Optional voice note
+                    <input
+                      ref={voiceNoteInput}
+                      type="file"
+                      accept="audio/*"
+                      onChange={(event) => {
+                        const selected = event.currentTarget.files?.[0] ?? null
+                        setReportError(null)
+                        if (selected && selected.size > MAX_VOICE_NOTE_BYTES) {
+                          setVoiceNoteFile(null)
+                          setReportError('Voice note is over 25 MB. Choose a smaller audio file.')
+                          event.currentTarget.value = ''
+                          return
+                        }
+                        setVoiceNoteFile(selected)
+                      }}
+                    />
+                  </label>
+                  {voiceNoteFile && <p className="report-file-name">{voiceNoteFile.name}</p>}
+                  <button
+                    className="report-button"
+                    type="button"
+                    onClick={() => void handleGenerateReport(result.inspection_id, voiceNoteFile ?? undefined)}
+                    disabled={reportActionId !== null}
+                  >
+                    {reportActionId === result.inspection_id ? (
+                      <><LoaderCircle className="spin" size={16} /> Preparing PDF</>
+                    ) : (
+                      <><FileText size={16} /> Generate and download PDF</>
+                    )}
+                  </button>
+                  {reportError && <p className="report-error" role="alert">{reportError}</p>}
+                </section>
               </div>
             ) : (
               <div className="result-message empty-message">
@@ -618,9 +722,32 @@ function App() {
                       {VERDICT_LABELS[item.verdict]}
                     </span>
                     <strong>{item.grade === 'Needs manual review' ? 'Review' : item.grade}</strong>
+                    {item.report_source_available ? (
+                      <button
+                        className="history-report-button"
+                        type="button"
+                        onClick={() => void (item.report_available
+                          ? handleDownloadReport(item.inspection_id)
+                          : handleGenerateReport(item.inspection_id))}
+                        disabled={reportActionId !== null}
+                      >
+                        {reportActionId === item.inspection_id ? (
+                          <LoaderCircle className="spin" size={14} />
+                        ) : item.report_available ? (
+                          <><Download size={14} /> PDF</>
+                        ) : (
+                          <><FileText size={14} /> Create PDF</>
+                        )}
+                      </button>
+                    ) : (
+                      <span className="history-report-unavailable" title="Original photo is unavailable">
+                        No PDF source
+                      </span>
+                    )}
                   </div>
                 </article>
               ))}
+              {reportError && <p className="report-error" role="alert">{reportError}</p>}
             </div>
           ) : (
             <div className="history-empty">

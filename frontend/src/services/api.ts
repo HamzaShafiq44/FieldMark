@@ -5,6 +5,7 @@ export type Verdict = 'pass' | 'defect' | 'needs_review'
 export type Grade = 'A' | 'B' | 'Reject' | 'Needs manual review'
 export type Severity = 'none' | 'low' | 'medium' | 'high'
 export type DefectType = 'bruise' | 'rot' | 'mold' | 'deformity'
+export type ReportUserType = 'farmer' | 'qc_operator'
 export type BoundingBox = [number, number, number, number]
 
 export interface InspectionResult {
@@ -28,6 +29,8 @@ export interface InspectionHistoryItem {
   verdict: Verdict
   grade: Grade
   thumbnail_url: string
+  report_available: boolean
+  report_source_available: boolean
 }
 
 export class ApiError extends Error {
@@ -85,4 +88,40 @@ export async function listInspectionHistory(): Promise<InspectionHistoryItem[]> 
 
 export function inspectionThumbnailUrl(inspectionId: string): string {
   return apiUrl(`/inspections/history/${encodeURIComponent(inspectionId)}/thumbnail`)
+}
+
+export async function createInspectionReport(
+  inspectionId: string,
+  userType: ReportUserType,
+  voiceNote?: File,
+): Promise<Blob> {
+  const formData = new FormData()
+  formData.append('user_type', userType)
+  if (voiceNote) formData.append('voice_note', voiceNote)
+
+  const response = await fetch(reportUrl(inspectionId), {
+    method: 'POST',
+    body: formData,
+  })
+  if (!response.ok) throw await reportApiError(response)
+  return response.blob()
+}
+
+export async function downloadInspectionReport(inspectionId: string): Promise<Blob> {
+  const response = await fetch(reportUrl(inspectionId))
+  if (!response.ok) throw await reportApiError(response)
+  return response.blob()
+}
+
+function reportUrl(inspectionId: string): string {
+  return apiUrl(`/inspections/${encodeURIComponent(inspectionId)}/report`)
+}
+
+async function reportApiError(response: Response): Promise<ApiError> {
+  const body = (await response.json()) as { detail?: unknown }
+  const message =
+    typeof body.detail === 'string'
+      ? body.detail
+      : `Report request failed with status ${response.status}.`
+  return new ApiError(message, response.status)
 }

@@ -1,0 +1,245 @@
+"""Focused tests for report evidence, validation, and PDF persistence."""
+
+import json
+import sqlite3
+from io import BytesIO
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+import pytest
+from PIL import Image
+from pydantic import SecretStr, ValidationError
+
+from app.ai import groq_report
+from app.ai.schemas import (
+    Condition,
+    Finding,
+    InspectionReportText,
+    InspectionResult,
+    ProduceType,
+    ReportUserType,
+    Severity,
+    VoiceNoteRelation,
+)
+from app.core.config import settings
+from app.reports.pdf_renderer import annotate_photo
+from app.services import inspection_service, report_service
+from app.storage.inspection_repository import InspectionRepository
+
+
+@pytest.fixture(autouse=True)
+def isolate_history_database(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep report persistence tests isolated from local application data."""
+    monkeypatch.setattr(settings, "inspection_db_path", tmp_path / "inspections.sqlite3")
+
+
+def _jpeg_bytes() -> bytes:
+    """Create a small source photo for inspection and PDF tests."""
+    buffer = BytesIO()
+    Image.new("RGB", (100, 80), color="white").save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+def _report_text() -> InspectionReportText:
+    """Return a valid narrative for deterministic report tests."""
+    return InspectionReportText(
+        summary="The image suggests a possible surface defect.",
+        findings="A small bruise is reported on the visible side.",
+        recommendations=["Re-inspect the affected area."],
+        voice_note_relation=VoiceNoteRelation.NOT_PROVIDED,
+    )
+
+
+def test_report_source_and_pdf_are_persisted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retain the original photo and make the generated PDF downloadable."""
+    image_data = _jpeg_bytes()
+    finding = Finding(
+        produce_type=ProduceType.APPLE,
+        condition=Condition.FRESH,
+        confidence=0.3,
+        visual_observation="A possible brown spot is visible.",
+        severity=Severity.LOW,
+        bbox=(0.2, 0.2, 0.8, 0.8),
+    )
+    result = inspection_service.inspect_produce(image_data, detect=lambda _: finding)
+    repository = InspectionRepository(settings.inspection_db_path)
+    source = repository.get_report_source(result.inspection_id)
+    assert source is not None
+    assert source.original_image == image_data
+    assert source.result.inspection_id == result.inspection_id
+
+    monkeypatch.setattr(report_service, "write_inspection_report", lambda *_: _report_text())
+    pdf = report_service.generate_inspection_report(result.inspection_id, ReportUserType.FARMER)
+
+    assert pdf.startswith(b"%PDF-")
+    assert repository.get_report_pdf(result.inspection_id) == pdf
+    assert repository.list_history(10, 0)[0].report_available
+
+
+def test_voice_note_is_transcribed_and_included_in_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pass the transcription into validated report writing."""
+    image_data = _jpeg_bytes()
+    result = inspection_service.inspect_produce(
+        image_data,
+        detect=lambda _: Finding(
+            produce_type=ProduceType.ORANGE,
+            condition=Condition.FRESH,
+            confidence=0.8,
+        ),
+    )
+    transcripts: list[str] = []
+    monkeypatch.setattr(
+        report_service,
+        "transcribe_voice_note",
+        lambda _data, _filename: "Soft spot near the stem after transport.",
+    )
+
+    def write_report(
+        _: InspectionResult,
+        user_type: ReportUserType,
+        transcript: str,
+    ) -> InspectionReportText:
+        assert user_type is ReportUserType.QC_OPERATOR
+        transcripts.append(transcript)
+        return InspectionReportText(
+            summary="The voice note adds context to the visual check.",
+            findings="A soft spot was noted by the operator.",
+            recommendations=["Re-inspect the stem area."],
+            voice_note_relation=VoiceNoteRelation.ADDS_CONTEXT,
+        )
+
+    monkeypatch.setattr(report_service, "write_inspection_report", write_report)
+    pdf = report_service.generate_inspection_report(
+        result.inspection_id,
+        ReportUserType.QC_OPERATOR,
+        b"voice bytes",
+        "voice-note.wav",
+    )
+
+    assert pdf.startswith(b"%PDF-")
+    assert transcripts == ["Soft spot near the stem after transport."]
+
+
+def test_annotated_photo_marks_only_the_reported_region() -> None:
+    """Draw a visible red box on a copy of the source photo."""
+    annotated = annotate_photo(_jpeg_bytes(), (0.2, 0.2, 0.8, 0.8))
+    with Image.open(BytesIO(annotated)) as image:
+        pixel = image.convert("RGB").getpixel((20, 40))
+    assert isinstance(pixel, tuple) and len(pixel) == 3
+    red, green, blue = pixel
+    assert red > green * 1.5
+    assert red > blue * 1.5
+
+
+def test_conflicting_voice_note_requires_an_explanation() -> None:
+    """Reject model output that marks a conflict without explaining it."""
+    with pytest.raises(ValidationError):
+        InspectionReportText(
+            summary="The sources disagree.",
+            findings="The visual check differs from the voice note.",
+            recommendations=["Inspect manually."],
+            voice_note_relation=VoiceNoteRelation.CONFLICTS,
+        )
+
+
+def test_report_text_rejects_fields_outside_its_schema() -> None:
+    """Reject unexpected AI output rather than silently accepting it."""
+    with pytest.raises(ValidationError):
+        InspectionReportText.model_validate(
+            {
+                "summary": "A possible mark is visible.",
+                "findings": "A mark was reported.",
+                "recommendations": ["Re-inspect the fruit."],
+                "voice_note_relation": "not_provided",
+                "voice_note_conflict": "",
+                "unsupported_claim": "invented",
+            }
+        )
+
+
+def test_groq_report_writer_passes_context_and_validates_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use the configured key and schema-validate the report model response."""
+    monkeypatch.setattr(settings, "groq_api_key", SecretStr("report-test-key"))
+    response = Mock()
+    response.choices = [
+        Mock(
+            message=Mock(
+                content=json.dumps(
+                    {
+                        "summary": "The photo suggests a possible bruise.",
+                        "findings": "A bruise was reported in the image.",
+                        "recommendations": ["Re-inspect the affected area."],
+                        "voice_note_relation": "adds_context",
+                        "voice_note_conflict": "",
+                    }
+                )
+            )
+        )
+    ]
+    client = Mock()
+    client.chat.completions.create.return_value = response
+    with patch("app.ai.groq_report.Groq", return_value=client) as groq_client:
+        report = groq_report.write_inspection_report(
+            inspection_service.inspect_produce(
+                _jpeg_bytes(),
+                detect=lambda _: Finding(
+                    produce_type=ProduceType.APPLE,
+                    condition=Condition.FRESH,
+                    confidence=0.8,
+                ),
+            ),
+            ReportUserType.FARMER,
+            "I noticed a soft spot.",
+        )
+
+    groq_client.assert_called_once_with(api_key="report-test-key")
+    request = client.chat.completions.create.call_args.kwargs
+    context = json.loads(request["messages"][1]["content"])
+    assert context["user_type"] == "farmer"
+    assert context["voice_note_transcript"] == "I noticed a soft spot."
+    assert report.voice_note_relation is VoiceNoteRelation.ADDS_CONTEXT
+
+
+def test_groq_transcribes_optional_voice_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send audio bytes to the configured Groq transcription model."""
+    monkeypatch.setattr(settings, "groq_api_key", SecretStr("report-test-key"))
+    client = Mock()
+    client.audio.transcriptions.create.return_value = Mock(text="Soft spot near the stem.")
+    with patch("app.ai.groq_report.Groq", return_value=client):
+        transcript = groq_report.transcribe_voice_note(b"voice bytes", "voice-note.wav")
+
+    request = client.audio.transcriptions.create.call_args.kwargs
+    assert request["file"] == ("voice-note.wav", b"voice bytes")
+    assert transcript == "Soft spot near the stem."
+
+
+def test_legacy_history_migrates_without_fabricating_source_images(tmp_path: Path) -> None:
+    """Keep old history readable while marking its original photo unavailable."""
+    database_path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE inspections (
+                inspection_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                produce_type TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                grade TEXT NOT NULL,
+                thumbnail BLOB NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO inspections VALUES (?, ?, ?, ?, ?, ?)",
+            ("legacy-id", "2026-01-01T00:00:00+00:00", "apple", "pass", "A", b"thumbnail"),
+        )
+    repository = InspectionRepository(database_path)
+
+    history_item = repository.list_history(10, 0)[0]
+    assert history_item.report_available is False
+    assert history_item.report_source_available is False
+    assert repository.get_report_source("legacy-id") is None

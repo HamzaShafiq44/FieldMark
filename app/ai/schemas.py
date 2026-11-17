@@ -1,9 +1,9 @@
 """Validated schemas for vision findings and inspection results."""
 
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Grade = Literal["A", "B", "Reject", "Needs manual review"]
 Verdict = Literal["pass", "defect", "needs_review"]
@@ -47,6 +47,22 @@ class ProduceType(StrEnum):
     BANANA = "banana"
     ORANGE = "orange"
     UNKNOWN = "unknown"
+
+
+class ReportUserType(StrEnum):
+    """Report audience that controls the report's language and emphasis."""
+
+    FARMER = "farmer"
+    QC_OPERATOR = "qc_operator"
+
+
+class VoiceNoteRelation(StrEnum):
+    """How an optional voice note relates to the visual inspection."""
+
+    NOT_PROVIDED = "not_provided"
+    SUPPORTS = "supports"
+    ADDS_CONTEXT = "adds_context"
+    CONFLICTS = "conflicts"
 
 
 class Finding(BaseModel):
@@ -101,9 +117,35 @@ class InspectionHistoryItem(BaseModel):
     verdict: Verdict
     grade: Grade
     thumbnail_url: str
+    report_available: bool = False
+    report_source_available: bool = False
 
 
 class InspectionHistoryResponse(BaseModel):
     """Paginated inspection history response."""
 
     items: list[InspectionHistoryItem]
+
+
+class InspectionReportText(BaseModel):
+    """Validated narrative returned by the report-writing model."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    summary: str = Field(min_length=1, max_length=600)
+    findings: str = Field(min_length=1, max_length=800)
+    recommendations: list[Annotated[str, Field(min_length=1, max_length=240)]] = Field(
+        min_length=1,
+        max_length=4,
+    )
+    voice_note_relation: VoiceNoteRelation
+    voice_note_conflict: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def require_conflict_explanation(self) -> "InspectionReportText":
+        """Require a plain-language explanation when the sources conflict."""
+        if self.voice_note_relation is VoiceNoteRelation.CONFLICTS and not self.voice_note_conflict:
+            raise ValueError("A conflicting voice note requires an explanation.")
+        if self.voice_note_relation is not VoiceNoteRelation.CONFLICTS and self.voice_note_conflict:
+            raise ValueError("A voice-note conflict explanation requires a conflict relation.")
+        return self
