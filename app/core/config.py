@@ -8,7 +8,7 @@ from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+DEFAULT_GROQ_VISION_MODEL = "qwen/qwen3.8-27b"
 DEFAULT_GROQ_REPORT_MODEL = "openai/gpt-oss-20b"
 DEFAULT_GROQ_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
 DEFAULT_OLLAMA_VISION_MODEL = "qwen2.5vl:7b"
