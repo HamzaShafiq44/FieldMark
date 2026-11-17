@@ -1621,7 +1621,32 @@ main,
   cursor: pointer;
 }
 
+.history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.history-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--forest-2);
+  background: var(--white);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
 .history-refresh:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.history-clear:disabled {
   cursor: wait;
   opacity: 0.65;
 }

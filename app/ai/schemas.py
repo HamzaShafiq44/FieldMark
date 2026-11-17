@@ -133,7 +133,10 @@ class InspectionReportText(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     summary: str = Field(min_length=1, max_length=600)
-    findings: str = Field(min_length=1, max_length=800)
+    findings: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field(
+        min_length=1,
+        max_length=5,
+    )
     recommendations: list[Annotated[str, Field(min_length=1, max_length=240)]] = Field(
         min_length=1,
         max_length=4,

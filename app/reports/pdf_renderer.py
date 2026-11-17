@@ -188,10 +188,10 @@ def _story(
             _paragraph("Photo evidence", styles["section"]),
             _photo_table(styles, original_image, result.bbox),
             _paragraph("Inspection findings", styles["section"]),
-            _paragraph(report_text.findings, styles["body"]),
-            _details_table(styles, result),
         ]
     )
+    story.extend(_paragraph(f"- {finding}", styles["body"]) for finding in report_text.findings)
+    story.append(_details_table(styles, result))
     _append_voice_note(story, styles, transcript, report_text)
     _append_recommendations(story, styles, result, report_text)
     story.append(Spacer(1, 8))

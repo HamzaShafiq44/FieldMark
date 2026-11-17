@@ -2,15 +2,19 @@
 
 import json
 import sqlite3
+from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import groq
 import pytest
+from httpx import Request, Response
 from PIL import Image
 from pydantic import SecretStr, ValidationError
 
 from app.ai import groq_report
+from app.ai.groq_report import MODEL_UNAVAILABLE_MESSAGE, RATE_LIMITED_MESSAGE, _provider_failure
 from app.ai.schemas import (
     Condition,
     Finding,
@@ -44,7 +48,7 @@ def _report_text() -> InspectionReportText:
     """Return a valid narrative for deterministic report tests."""
     return InspectionReportText(
         summary="The image suggests a possible surface defect.",
-        findings="A small bruise is reported on the visible side.",
+        findings=["A small bruise is reported on the visible side."],
         recommendations=["Re-inspect the affected area."],
         voice_note_relation=VoiceNoteRelation.NOT_PROVIDED,
     )
@@ -105,7 +109,7 @@ def test_voice_note_is_transcribed_and_included_in_report(
         transcripts.append(transcript)
         return InspectionReportText(
             summary="The voice note adds context to the visual check.",
-            findings="A soft spot was noted by the operator.",
+            findings=["A soft spot was noted by the operator."],
             recommendations=["Re-inspect the stem area."],
             voice_note_relation=VoiceNoteRelation.ADDS_CONTEXT,
         )
@@ -138,7 +142,7 @@ def test_conflicting_voice_note_requires_an_explanation() -> None:
     with pytest.raises(ValidationError):
         InspectionReportText(
             summary="The sources disagree.",
-            findings="The visual check differs from the voice note.",
+            findings=["The visual check differs from the voice note."],
             recommendations=["Inspect manually."],
             voice_note_relation=VoiceNoteRelation.CONFLICTS,
         )
@@ -150,7 +154,7 @@ def test_report_text_rejects_fields_outside_its_schema() -> None:
         InspectionReportText.model_validate(
             {
                 "summary": "A possible mark is visible.",
-                "findings": "A mark was reported.",
+                "findings": ["A mark was reported."],
                 "recommendations": ["Re-inspect the fruit."],
                 "voice_note_relation": "not_provided",
                 "voice_note_conflict": "",
@@ -162,8 +166,10 @@ def test_report_text_rejects_fields_outside_its_schema() -> None:
 def test_groq_report_writer_passes_context_and_validates_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Use the configured key and schema-validate the report model response."""
+    """Fall back to the configured vision model and validate AI report JSON."""
     monkeypatch.setattr(settings, "groq_api_key", SecretStr("report-test-key"))
+    monkeypatch.setattr(settings, "groq_report_model", "")
+    monkeypatch.setattr(settings, "groq_vision_model", "qwen/qwen3.8-27b")
     response = Mock()
     response.choices = [
         Mock(
@@ -171,7 +177,7 @@ def test_groq_report_writer_passes_context_and_validates_output(
                 content=json.dumps(
                     {
                         "summary": "The photo suggests a possible bruise.",
-                        "findings": "A bruise was reported in the image.",
+                        "findings": ["A bruise was reported in the image."],
                         "recommendations": ["Re-inspect the affected area."],
                         "voice_note_relation": "adds_context",
                         "voice_note_conflict": "",
@@ -199,6 +205,7 @@ def test_groq_report_writer_passes_context_and_validates_output(
     groq_client.assert_called_once_with(api_key="report-test-key")
     request = client.chat.completions.create.call_args.kwargs
     context = json.loads(request["messages"][1]["content"])
+    assert request["model"] == "qwen/qwen3.8-27b"
     assert context["user_type"] == "farmer"
     assert context["voice_note_transcript"] == "I noticed a soft spot."
     assert report.voice_note_relation is VoiceNoteRelation.ADDS_CONTEXT
@@ -215,6 +222,38 @@ def test_groq_transcribes_optional_voice_note(monkeypatch: pytest.MonkeyPatch) -
     request = client.audio.transcriptions.create.call_args.kwargs
     assert request["file"] == ("voice-note.wav", b"voice bytes")
     assert transcript == "Soft spot near the stem."
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "message"),
+    [
+        (
+            lambda: groq.NotFoundError(
+                "provider details stay private",
+                response=Response(404, request=Request("POST", "https://api.groq.com")),
+                body=None,
+            ),
+            MODEL_UNAVAILABLE_MESSAGE,
+        ),
+        (
+            lambda: groq.RateLimitError(
+                "provider details stay private",
+                response=Response(429, request=Request("POST", "https://api.groq.com")),
+                body=None,
+            ),
+            RATE_LIMITED_MESSAGE,
+        ),
+    ],
+)
+def test_groq_report_errors_are_actionable(
+    error_factory: Callable[[], groq.APIError],
+    message: str,
+) -> None:
+    """Translate common provider errors without exposing response details."""
+    translated = _provider_failure(error_factory(), "Report writing")
+
+    assert str(translated) == message
+    assert "provider details" not in str(translated)
 
 
 def test_legacy_history_migrates_without_fabricating_source_images(tmp_path: Path) -> None:

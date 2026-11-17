@@ -15,6 +15,7 @@ import {
   ShieldCheck,
   Sparkles,
   Sun,
+  Trash2,
   Upload,
   X,
 } from 'lucide-react'
@@ -30,6 +31,7 @@ import './App.css'
 import {
   ApiError,
   checkApiHealth,
+  clearInspectionHistory,
   createInspectionReport,
   downloadInspectionReport,
   inspectionThumbnailUrl,
@@ -158,6 +160,7 @@ function App() {
   const [history, setHistory] = useState<InspectionHistoryItem[]>([])
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [isHistoryLoading, setIsHistoryLoading] = useState(true)
+  const [isClearingHistory, setIsClearingHistory] = useState(false)
   const [voiceNoteFile, setVoiceNoteFile] = useState<File | null>(null)
   const [reportUserType, setReportUserType] = useState<ReportUserType>('farmer')
   const [reportActionId, setReportActionId] = useState<string | null>(null)
@@ -342,6 +345,30 @@ function App() {
       setReportError(caught instanceof Error ? caught.message : 'PDF report could not be downloaded.')
     } finally {
       setReportActionId(null)
+    }
+  }
+
+  const handleClearHistory = async () => {
+    if (isClearingHistory || isLoading || reportActionId || history.length === 0) return
+    const confirmed = window.confirm(
+      'Permanently delete all saved inspections, original photos, and PDF reports? This cannot be undone.',
+    )
+    if (!confirmed) return
+    setIsClearingHistory(true)
+    setHistoryError(null)
+    setReportError(null)
+    try {
+      await clearInspectionHistory()
+      setHistory([])
+      setResult(null)
+      setVoiceNoteFile(null)
+      if (voiceNoteInput.current) voiceNoteInput.current.value = ''
+    } catch (caught: unknown) {
+      setHistoryError(
+        caught instanceof Error ? caught.message : 'Inspection history could not be cleared.',
+      )
+    } finally {
+      setIsClearingHistory(false)
     }
   }
 
@@ -687,15 +714,35 @@ function App() {
               <p className="section-kicker">03 <span>/</span> SAVED INSPECTIONS</p>
               <h2>Recent history</h2>
             </div>
-            <button
-              className="history-refresh"
-              type="button"
-              onClick={() => void refreshHistory()}
-              disabled={isHistoryLoading}
-            >
-              <RefreshCw size={15} className={isHistoryLoading ? 'spin' : ''} />
-              Refresh
-            </button>
+            <div className="history-actions">
+              <button
+                className="history-refresh"
+                type="button"
+                onClick={() => void refreshHistory()}
+                disabled={isHistoryLoading || isClearingHistory}
+              >
+                <RefreshCw size={15} className={isHistoryLoading ? 'spin' : ''} />
+                Refresh
+              </button>
+              <button
+                className="history-clear"
+                type="button"
+                onClick={() => void handleClearHistory()}
+                disabled={
+                  history.length === 0 ||
+                  isHistoryLoading ||
+                  isClearingHistory ||
+                  isLoading ||
+                  reportActionId !== null
+                }
+              >
+                {isClearingHistory ? (
+                  <><LoaderCircle className="spin" size={15} /> Clearing</>
+                ) : (
+                  <><Trash2 size={15} /> Clear history</>
+                )}
+              </button>
+            </div>
           </div>
           {historyError ? (
             <div className="history-message history-error">

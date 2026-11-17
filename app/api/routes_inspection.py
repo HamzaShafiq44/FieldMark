@@ -14,6 +14,7 @@ from app.services.inspection_service import (
     InspectionDetectionError,
     InspectionStorageError,
     InvalidImageError,
+    clear_inspection_history,
     get_inspection_thumbnail,
     inspect_produce,
     list_inspection_history,
@@ -86,6 +87,19 @@ async def inspection_history_route(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Inspection history could not be loaded.",
         ) from exc
+
+
+@router.delete("/history", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_inspection_history_route() -> Response:
+    """Delete all saved inspections, original photos, and generated reports."""
+    try:
+        await run_in_threadpool(clear_inspection_history)
+    except InspectionStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/history/{inspection_id}/thumbnail")

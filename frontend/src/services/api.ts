@@ -113,15 +113,24 @@ export async function downloadInspectionReport(inspectionId: string): Promise<Bl
   return response.blob()
 }
 
+export async function clearInspectionHistory(): Promise<void> {
+  const response = await fetch(apiUrl('/inspections/history'), { method: 'DELETE' })
+  if (!response.ok) {
+    throw await responseApiError(response, 'Could not clear inspection history.')
+  }
+}
+
 function reportUrl(inspectionId: string): string {
   return apiUrl(`/inspections/${encodeURIComponent(inspectionId)}/report`)
 }
 
 async function reportApiError(response: Response): Promise<ApiError> {
+  return responseApiError(response, `Report request failed with status ${response.status}.`)
+}
+
+async function responseApiError(response: Response, fallback: string): Promise<ApiError> {
   const body = (await response.json()) as { detail?: unknown }
   const message =
-    typeof body.detail === 'string'
-      ? body.detail
-      : `Report request failed with status ${response.status}.`
+    typeof body.detail === 'string' ? body.detail : fallback
   return new ApiError(message, response.status)
 }

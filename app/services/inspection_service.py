@@ -213,6 +213,14 @@ def list_inspection_history(limit: int, offset: int) -> InspectionHistoryRespons
     return InspectionHistoryResponse(items=items)
 
 
+def clear_inspection_history() -> None:
+    """Delete all saved inspection data and generated PDF reports."""
+    try:
+        InspectionRepository(settings.inspection_db_path).clear_history()
+    except HistoryStorageError as exc:
+        raise InspectionStorageError("Inspection history could not be cleared.") from exc
+
+
 def get_inspection_thumbnail(inspection_id: str) -> bytes | None:
     """Return the thumbnail for a prior inspection when it exists."""
     try:

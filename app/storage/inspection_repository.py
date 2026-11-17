@@ -76,6 +76,8 @@ ON CONFLICT(inspection_id) DO UPDATE SET
     pdf = excluded.pdf
 """
 SELECT_REPORT_PDF = "SELECT pdf FROM inspection_reports WHERE inspection_id = ?"
+DELETE_REPORTS = "DELETE FROM inspection_reports"
+DELETE_INSPECTIONS = "DELETE FROM inspections"
 
 
 class HistoryStorageError(RuntimeError):
@@ -207,6 +209,16 @@ class InspectionRepository:
         except (OSError, sqlite3.Error) as exc:
             LOGGER.error("Inspection report read failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection report could not be loaded.") from exc
+
+    def clear_history(self) -> None:
+        """Delete all saved inspection records and generated reports atomically."""
+        try:
+            with self._connection() as connection:
+                connection.execute(DELETE_REPORTS)
+                connection.execute(DELETE_INSPECTIONS)
+        except (OSError, sqlite3.Error) as exc:
+            LOGGER.error("Inspection history clear failed (%s).", type(exc).__name__)
+            raise HistoryStorageError("Inspection history could not be cleared.") from exc
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:

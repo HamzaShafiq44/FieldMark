@@ -9,7 +9,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-DEFAULT_GROQ_REPORT_MODEL = DEFAULT_GROQ_VISION_MODEL
 DEFAULT_GROQ_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
 DEFAULT_OLLAMA_VISION_MODEL = "qwen2.5vl:7b"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
@@ -29,7 +28,7 @@ class Settings(BaseSettings):
     vision_provider: Literal["groq", "ollama"] = "groq"
     groq_api_key: SecretStr = SecretStr("")
     groq_vision_model: str = DEFAULT_GROQ_VISION_MODEL
-    groq_report_model: str = DEFAULT_GROQ_REPORT_MODEL
+    groq_report_model: str = ""
     groq_transcription_model: str = DEFAULT_GROQ_TRANSCRIPTION_MODEL
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
     ollama_vision_model: str = DEFAULT_OLLAMA_VISION_MODEL

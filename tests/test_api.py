@@ -10,11 +10,12 @@ from PIL import Image
 from pydantic import ValidationError
 
 from app.ai.providers import DetectionError
-from app.ai.schemas import Condition, Finding, InspectionResult, ProduceType
+from app.ai.schemas import Condition, Finding, InspectionResult, ProduceType, ReportUserType
 from app.api import routes_inspection
 from app.core.config import settings
 from app.main import app
 from app.services import inspection_service
+from app.storage.inspection_repository import InspectionRepository
 
 client = TestClient(app)
 
@@ -82,6 +83,39 @@ def test_history_starts_empty_and_validates_pagination() -> None:
     assert response.json() == {"items": []}
     assert client.get("/inspections/history?limit=0").status_code == 422
     assert client.get("/inspections/history?offset=-1").status_code == 422
+
+
+def test_clear_history_deletes_inspections_and_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clear saved inspection data and generated PDF reports."""
+    finding = Finding(
+        produce_type=ProduceType.APPLE,
+        condition=Condition.FRESH,
+        confidence=0.9,
+    )
+    _patch_detector(monkeypatch, lambda _: finding)
+    inspection = client.post(
+        "/inspections/produce",
+        files={"image": ("apple.jpg", _jpeg_bytes())},
+    ).json()
+    inspection_id = inspection["inspection_id"]
+    repository = InspectionRepository(settings.inspection_db_path)
+    repository.save_report(
+        inspection_id,
+        "report-1",
+        ReportUserType.FARMER,
+        "",
+        "{}",
+        b"%PDF-test",
+    )
+
+    response = client.delete("/inspections/history")
+
+    assert response.status_code == 204
+    assert client.get("/inspections/history").json() == {"items": []}
+    assert repository.get_report_pdf(inspection_id) is None
+    assert repository.get_thumbnail(inspection_id) is None
 
 
 def test_unknown_history_thumbnail_returns_404() -> None:
