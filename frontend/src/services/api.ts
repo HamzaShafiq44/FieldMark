@@ -65,7 +65,9 @@ export async function inspectProduce(file: File): Promise<InspectionResult> {
   if (!response.ok) {
     const body = (await response.json()) as { detail?: unknown }
     const message =
-      typeof body.detail === 'string' ? body.detail : `Inspection failed with status ${response.status}.`
+      typeof body.detail === 'string'
+        ? body.detail
+        : `Inspection failed with status ${response.status}.`
     throw new ApiError(message, response.status)
   }
 
@@ -75,7 +77,10 @@ export async function inspectProduce(file: File): Promise<InspectionResult> {
 export async function listInspectionHistory(): Promise<InspectionHistoryItem[]> {
   const response = await fetch(apiUrl('/inspections/history'))
   if (!response.ok) {
-    throw new ApiError(`Could not load inspection history (status ${response.status}).`, response.status)
+    throw new ApiError(
+      `Could not load inspection history (status ${response.status}).`,
+      response.status,
+    )
   }
 
   const body = (await response.json()) as { items?: unknown }
@@ -128,7 +133,6 @@ async function reportApiError(response: Response): Promise<ApiError> {
 
 async function responseApiError(response: Response, fallback: string): Promise<ApiError> {
   const body = (await response.json()) as { detail?: unknown }
-  const message =
-    typeof body.detail === 'string' ? body.detail : fallback
+  const message = typeof body.detail === 'string' ? body.detail : fallback
   return new ApiError(message, response.status)
 }

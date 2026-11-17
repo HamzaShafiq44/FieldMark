@@ -2,8 +2,7 @@
   min-height: 100vh;
   overflow: hidden;
   background:
-    radial-gradient(ellipse at 87% 14%, rgba(216, 226, 190, 0.3), transparent 25rem),
-    var(--paper);
+    radial-gradient(ellipse at 87% 14%, rgba(216, 226, 190, 0.3), transparent 25rem), var(--paper);
 }
 
 .topbar,
@@ -213,7 +212,7 @@ main,
 .hero-art::before,
 .hero-art::after {
   position: absolute;
-  content: "";
+  content: '';
   border-radius: 50%;
 }
 
@@ -419,8 +418,7 @@ main,
   border: 1px dashed #c9d2c3;
   border-radius: 18px;
   background:
-    radial-gradient(circle at 50% 40%, rgba(220, 232, 210, 0.42), transparent 43%),
-    #fafbf8;
+    radial-gradient(circle at 50% 40%, rgba(220, 232, 210, 0.42), transparent 43%), #fafbf8;
   cursor: pointer;
   transition:
     border-color 160ms ease,
@@ -730,7 +728,7 @@ main,
   height: 245px;
   border: 1px solid rgba(225, 238, 199, 0.08);
   border-radius: 50%;
-  content: "";
+  content: '';
   pointer-events: none;
 }
 
@@ -1873,8 +1871,7 @@ main,
 
 :root[data-theme='dark'] .app-shell {
   background:
-    radial-gradient(ellipse at 87% 14%, rgba(105, 139, 91, 0.12), transparent 25rem),
-    var(--paper);
+    radial-gradient(ellipse at 87% 14%, rgba(105, 139, 91, 0.12), transparent 25rem), var(--paper);
 }
 
 :root[data-theme='dark'] .connection-pill {
@@ -1906,8 +1903,7 @@ main,
 :root[data-theme='dark'] .upload-zone {
   border-color: #506252;
   background:
-    radial-gradient(circle at 50% 40%, rgba(111, 145, 95, 0.12), transparent 43%),
-    #1b261e;
+    radial-gradient(circle at 50% 40%, rgba(111, 145, 95, 0.12), transparent 43%), #1b261e;
 }
 
 :root[data-theme='dark'] .upload-zone:hover,

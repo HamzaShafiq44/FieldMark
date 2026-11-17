@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    image: visual-defect-inspector:0.1.0
+    env_file: .env
+    environment:
+      INSPECTION_DB_PATH: /app/data/inspections.sqlite3
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    volumes:
+      - inspection-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  inspection-data:

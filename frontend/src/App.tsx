@@ -19,14 +19,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ChangeEvent,
-  type DragEvent,
-} from 'react'
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react'
 import './App.css'
 import {
   ApiError,
@@ -95,9 +88,7 @@ const RIPENESS_GUIDE = [
   {
     name: 'Banana',
     emoji: '🍌',
-    lessRipe: [
-      'A mostly green peel and more angular shape often indicate an earlier stage.',
-    ],
+    lessRipe: ['A mostly green peel and more angular shape often indicate an earlier stage.'],
     riper: [
       'The peel commonly turns yellow; small brown sugar spots can be normal ripening.',
       'Green tips may remain while the banana continues to ripen.',
@@ -106,9 +97,7 @@ const RIPENESS_GUIDE = [
   {
     name: 'Tomato',
     emoji: '🍅',
-    lessRipe: [
-      'A pale or green cast, including green shoulders, may appear before full color.',
-    ],
+    lessRipe: ['A pale or green cast, including green shoulders, may appear before full color.'],
     riper: [
       'Color often deepens toward the variety’s mature color, which is not always red.',
       'Green shoulders alone do not mean the tomato is defective.',
@@ -326,7 +315,9 @@ function App() {
       }
       void refreshHistory()
     } catch (caught: unknown) {
-      setReportError(caught instanceof Error ? caught.message : 'PDF report could not be generated.')
+      setReportError(
+        caught instanceof Error ? caught.message : 'PDF report could not be generated.',
+      )
     } finally {
       setReportActionId(null)
     }
@@ -340,7 +331,9 @@ function App() {
       const pdf = await downloadInspectionReport(inspectionId)
       downloadPdf(pdf, inspectionId)
     } catch (caught: unknown) {
-      setReportError(caught instanceof Error ? caught.message : 'PDF report could not be downloaded.')
+      setReportError(
+        caught instanceof Error ? caught.message : 'PDF report could not be downloaded.',
+      )
     } finally {
       setReportActionId(null)
     }
@@ -409,8 +402,7 @@ function App() {
         <section className="hero">
           <div className="hero-copy">
             <div className="eyebrow">
-              <span className="eyebrow-dot" />
-              A FRESH LOOK AT QUALITY
+              <span className="eyebrow-dot" />A FRESH LOOK AT QUALITY
             </div>
             <h1>
               Know your harvest
@@ -426,7 +418,10 @@ function App() {
               <span>Indicative results. Always inspect manually when in doubt.</span>
             </div>
           </div>
-          <div className="hero-art" aria-label="Supported produce: tomato, apple, banana, and orange">
+          <div
+            className="hero-art"
+            aria-label="Supported produce: tomato, apple, banana, and orange"
+          >
             <div className="orbit orbit-one" />
             <div className="orbit orbit-two" />
             <div className="fruit-card fruit-card-main">
@@ -453,11 +448,15 @@ function App() {
           <section className="panel upload-panel">
             <div className="panel-heading">
               <div>
-                <p className="section-kicker">01 <span>/</span> IMAGE INPUT</p>
+                <p className="section-kicker">
+                  01 <span>/</span> IMAGE INPUT
+                </p>
                 <h2>Start with a photo</h2>
                 <p className="panel-subtitle">One piece of produce, clearly in frame.</p>
               </div>
-              <span className="heading-icon"><ImagePlus size={19} /></span>
+              <span className="heading-icon">
+                <ImagePlus size={19} />
+              </span>
             </div>
 
             <label
@@ -482,26 +481,41 @@ function App() {
                   <div className="image-canvas">
                     <img src={previewUrl} alt="Selected produce preview" />
                   </div>
-                  <span className="preview-change"><RefreshCw size={14} /> Replace photo</span>
+                  <span className="preview-change">
+                    <RefreshCw size={14} /> Replace photo
+                  </span>
                 </div>
               ) : (
                 <div className="upload-prompt">
-                  <span className="upload-icon"><Upload size={23} /></span>
+                  <span className="upload-icon">
+                    <Upload size={23} />
+                  </span>
                   <span className="upload-title">Drop your photo here</span>
-                  <span className="upload-subtitle">or <strong>browse files</strong> on your device</span>
-                  <span className="upload-formats">JPEG · PNG · WEBP <i /> UP TO 10 MB</span>
+                  <span className="upload-subtitle">
+                    or <strong>browse files</strong> on your device
+                  </span>
+                  <span className="upload-formats">
+                    JPEG · PNG · WEBP <i /> UP TO 10 MB
+                  </span>
                 </div>
               )}
             </label>
 
             {file ? (
               <div className="file-row">
-                <span className="file-icon"><ImagePlus size={17} /></span>
+                <span className="file-icon">
+                  <ImagePlus size={17} />
+                </span>
                 <span className="file-info">
                   <strong>{file.name}</strong>
                   <small>{formatFileSize(file.size)}</small>
                 </span>
-                <button className="icon-button" type="button" onClick={clearImage} aria-label="Remove image">
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={clearImage}
+                  aria-label="Remove image"
+                >
                   <X size={17} />
                 </button>
               </div>
@@ -516,7 +530,11 @@ function App() {
                   hidden
                   onChange={handleFileChange}
                 />
-                <button className="camera-button" type="button" onClick={() => cameraInput.current?.click()}>
+                <button
+                  className="camera-button"
+                  type="button"
+                  onClick={() => cameraInput.current?.click()}
+                >
                   <Camera size={16} /> Use camera
                 </button>
               </div>
@@ -524,10 +542,18 @@ function App() {
 
             <div className="supported-row">
               <span>SUPPORTED</span>
-              <div className="supported-fruit"><i>🍅</i> Tomato</div>
-              <div className="supported-fruit"><i>🍎</i> Apple</div>
-              <div className="supported-fruit"><i>🍌</i> Banana</div>
-              <div className="supported-fruit"><i>🍊</i> Orange</div>
+              <div className="supported-fruit">
+                <i>🍅</i> Tomato
+              </div>
+              <div className="supported-fruit">
+                <i>🍎</i> Apple
+              </div>
+              <div className="supported-fruit">
+                <i>🍌</i> Banana
+              </div>
+              <div className="supported-fruit">
+                <i>🍊</i> Orange
+              </div>
             </div>
 
             <button
@@ -554,37 +580,59 @@ function App() {
             </p>
           </section>
 
-          <section className={`result-panel ${result ? `result-${result.verdict}` : ''}`} aria-live="polite">
+          <section
+            className={`result-panel ${result ? `result-${result.verdict}` : ''}`}
+            aria-live="polite"
+          >
             <div className="result-panel-top">
               <div>
-                <p className="section-kicker">02 <span>/</span> INSPECTION RESULT</p>
+                <p className="section-kicker">
+                  02 <span>/</span> INSPECTION RESULT
+                </p>
                 <h2>{result ? 'Your quality readout' : 'Your result, right here.'}</h2>
               </div>
-              {result && <span className={`verdict-pill verdict-${result.verdict}`}>{VERDICT_LABELS[result.verdict]}</span>}
+              {result && (
+                <span className={`verdict-pill verdict-${result.verdict}`}>
+                  {VERDICT_LABELS[result.verdict]}
+                </span>
+              )}
             </div>
 
             {error ? (
               <div className="result-message error-message">
-                <span className="message-icon"><CircleAlert size={22} /></span>
+                <span className="message-icon">
+                  <CircleAlert size={22} />
+                </span>
                 <h3>Inspection didn’t finish</h3>
                 <p>{error}</p>
-                <button type="button" className="retry-button" onClick={handleInspect} disabled={!file || isLoading}>
+                <button
+                  type="button"
+                  className="retry-button"
+                  onClick={handleInspect}
+                  disabled={!file || isLoading}
+                >
                   Try again <RefreshCw size={15} />
                 </button>
               </div>
             ) : isLoading ? (
               <div className="result-message loading-message">
-                <span className="scan-loader"><ScanLine size={30} /></span>
+                <span className="scan-loader">
+                  <ScanLine size={30} />
+                </span>
                 <h3>Looking a little closer…</h3>
                 <p>Checking visible signs and estimating a quality grade.</p>
-                <div className="loading-track"><span /></div>
+                <div className="loading-track">
+                  <span />
+                </div>
               </div>
             ) : result ? (
               <div className="result-content">
                 <div className="grade-row">
                   <div className="grade-block">
                     <span className="result-label">QUALITY GRADE</span>
-                    <strong className={`grade-value grade-${result.grade === 'A' ? 'a' : result.grade === 'B' ? 'b' : 'review'}`}>
+                    <strong
+                      className={`grade-value grade-${result.grade === 'A' ? 'a' : result.grade === 'B' ? 'b' : 'review'}`}
+                    >
                       {result.grade === 'Needs manual review' ? '—' : result.grade}
                     </strong>
                   </div>
@@ -603,11 +651,15 @@ function App() {
                     {result.defect_types.length ? (
                       <div className="defect-tags">
                         {result.defect_types.map((defect) => (
-                          <span className="defect-tag" key={defect}>{defect}</span>
+                          <span className="defect-tag" key={defect}>
+                            {defect}
+                          </span>
                         ))}
                       </div>
                     ) : (
-                      <strong className="detail-value"><Check size={15} /> No visible defects</strong>
+                      <strong className="detail-value">
+                        <Check size={15} /> No visible defects
+                      </strong>
                     )}
                   </div>
                   <div className="detail-cell">
@@ -621,19 +673,25 @@ function App() {
                 <section className="verdict-notes" aria-label="Decision basis">
                   <h3>Why this verdict?</h3>
                   <ul>
-                    {result.verdict_notes.map((note) => <li key={note}>{note}</li>)}
+                    {result.verdict_notes.map((note) => (
+                      <li key={note}>{note}</li>
+                    ))}
                   </ul>
                 </section>
 
                 <div className="action-card">
-                  <span className="action-icon"><ArrowRight size={17} /></span>
+                  <span className="action-icon">
+                    <ArrowRight size={17} />
+                  </span>
                   <span>
                     <small>RECOMMENDED NEXT STEP</small>
                     <strong>{result.recommended_action}</strong>
                   </span>
                 </div>
                 <p className="result-disclaimer">{result.disclaimer}</p>
-                <p className="inspection-id">INSPECTION {result.inspection_id.slice(0, 8).toUpperCase()}</p>
+                <p className="inspection-id">
+                  INSPECTION {result.inspection_id.slice(0, 8).toUpperCase()}
+                </p>
                 <section className="report-controls" aria-label="PDF inspection report">
                   <div>
                     <h3>Inspection report</h3>
@@ -665,16 +723,26 @@ function App() {
                   <button
                     className="report-button"
                     type="button"
-                    onClick={() => void handleGenerateReport(result.inspection_id, voiceNoteFile ?? undefined)}
+                    onClick={() =>
+                      void handleGenerateReport(result.inspection_id, voiceNoteFile ?? undefined)
+                    }
                     disabled={reportActionId !== null}
                   >
                     {reportActionId === result.inspection_id ? (
-                      <><LoaderCircle className="spin" size={16} /> Preparing PDF</>
+                      <>
+                        <LoaderCircle className="spin" size={16} /> Preparing PDF
+                      </>
                     ) : (
-                      <><FileText size={16} /> Generate and download PDF</>
+                      <>
+                        <FileText size={16} /> Generate and download PDF
+                      </>
                     )}
                   </button>
-                  {reportError && <p className="report-error" role="alert">{reportError}</p>}
+                  {reportError && (
+                    <p className="report-error" role="alert">
+                      {reportError}
+                    </p>
+                  )}
                 </section>
               </div>
             ) : (
@@ -682,12 +750,18 @@ function App() {
                 <div className="empty-visual">
                   <span className="empty-ring empty-ring-one" />
                   <span className="empty-ring empty-ring-two" />
-                  <span className="empty-scan"><ScanLine size={30} /></span>
-                  <span className="empty-check"><Check size={15} /></span>
+                  <span className="empty-scan">
+                    <ScanLine size={30} />
+                  </span>
+                  <span className="empty-check">
+                    <Check size={15} />
+                  </span>
                 </div>
                 <h3>Good decisions start with a closer look.</h3>
                 <p>Your grade, visible defects, and next step will appear here after inspection.</p>
-                <div className="empty-tip"><Sparkles size={14} /> Clear light makes for a clearer read.</div>
+                <div className="empty-tip">
+                  <Sparkles size={14} /> Clear light makes for a clearer read.
+                </div>
               </div>
             )}
           </section>
@@ -696,7 +770,9 @@ function App() {
         <section className="history-section" aria-label="Recent inspections">
           <div className="history-heading">
             <div>
-              <p className="section-kicker">03 <span>/</span> SAVED INSPECTIONS</p>
+              <p className="section-kicker">
+                03 <span>/</span> SAVED INSPECTIONS
+              </p>
               <h2>Recent history</h2>
             </div>
             <div className="history-actions">
@@ -722,9 +798,13 @@ function App() {
                 }
               >
                 {isClearingHistory ? (
-                  <><LoaderCircle className="spin" size={15} /> Clearing</>
+                  <>
+                    <LoaderCircle className="spin" size={15} /> Clearing
+                  </>
                 ) : (
-                  <><Trash2 size={15} /> Clear history</>
+                  <>
+                    <Trash2 size={15} /> Clear history
+                  </>
                 )}
               </button>
             </div>
@@ -732,7 +812,9 @@ function App() {
           {historyError ? (
             <div className="history-message history-error">
               <p>{historyError}</p>
-              <button type="button" onClick={() => void refreshHistory()}>Try again</button>
+              <button type="button" onClick={() => void refreshHistory()}>
+                Try again
+              </button>
             </div>
           ) : isHistoryLoading && history.length === 0 ? (
             <p className="history-message">Loading saved inspections…</p>
@@ -758,28 +840,41 @@ function App() {
                       <button
                         className="history-report-button"
                         type="button"
-                        onClick={() => void (item.report_available
-                          ? handleDownloadReport(item.inspection_id)
-                          : handleGenerateReport(item.inspection_id))}
+                        onClick={() =>
+                          void (item.report_available
+                            ? handleDownloadReport(item.inspection_id)
+                            : handleGenerateReport(item.inspection_id))
+                        }
                         disabled={reportActionId !== null}
                       >
                         {reportActionId === item.inspection_id ? (
                           <LoaderCircle className="spin" size={14} />
                         ) : item.report_available ? (
-                          <><Download size={14} /> PDF</>
+                          <>
+                            <Download size={14} /> PDF
+                          </>
                         ) : (
-                          <><FileText size={14} /> Create PDF</>
+                          <>
+                            <FileText size={14} /> Create PDF
+                          </>
                         )}
                       </button>
                     ) : (
-                      <span className="history-report-unavailable" title="Original photo is unavailable">
+                      <span
+                        className="history-report-unavailable"
+                        title="Original photo is unavailable"
+                      >
                         No PDF source
                       </span>
                     )}
                   </div>
                 </article>
               ))}
-              {reportError && <p className="report-error" role="alert">{reportError}</p>}
+              {reportError && (
+                <p className="report-error" role="alert">
+                  {reportError}
+                </p>
+              )}
             </div>
           ) : (
             <div className="history-empty">
@@ -797,21 +892,31 @@ function App() {
           <div className="steps">
             <div className="step-card">
               <span className="step-number">01</span>
-              <span className="step-icon"><ImagePlus size={19} /></span>
+              <span className="step-icon">
+                <ImagePlus size={19} />
+              </span>
               <strong>Choose a photo</strong>
               <p>Use a clear image with one piece of produce in view.</p>
             </div>
-            <div className="step-connector"><ArrowRight size={17} /></div>
+            <div className="step-connector">
+              <ArrowRight size={17} />
+            </div>
             <div className="step-card">
               <span className="step-number">02</span>
-              <span className="step-icon"><ScanLine size={19} /></span>
+              <span className="step-icon">
+                <ScanLine size={19} />
+              </span>
               <strong>Review the signs</strong>
               <p>The model looks for visible quality issues and their location.</p>
             </div>
-            <div className="step-connector"><ArrowRight size={17} /></div>
+            <div className="step-connector">
+              <ArrowRight size={17} />
+            </div>
             <div className="step-card">
               <span className="step-number">03</span>
-              <span className="step-icon"><Check size={19} /></span>
+              <span className="step-icon">
+                <Check size={19} />
+              </span>
               <strong>Choose your next step</strong>
               <p>Use the grade as a guide, and inspect manually when unsure.</p>
             </div>
@@ -833,14 +938,24 @@ function App() {
           <div className="ripeness-grid">
             {RIPENESS_GUIDE.map((fruit) => (
               <article className="ripeness-card" key={fruit.name}>
-                <h3><span aria-hidden="true">{fruit.emoji}</span> {fruit.name}</h3>
+                <h3>
+                  <span aria-hidden="true">{fruit.emoji}</span> {fruit.name}
+                </h3>
                 <div className="ripeness-cue-group">
                   <h4>Less ripe signs</h4>
-                  <ul>{fruit.lessRipe.map((cue) => <li key={cue}>{cue}</li>)}</ul>
+                  <ul>
+                    {fruit.lessRipe.map((cue) => (
+                      <li key={cue}>{cue}</li>
+                    ))}
+                  </ul>
                 </div>
                 <div className="ripeness-cue-group">
                   <h4>Riper signs</h4>
-                  <ul>{fruit.riper.map((cue) => <li key={cue}>{cue}</li>)}</ul>
+                  <ul>
+                    {fruit.riper.map((cue) => (
+                      <li key={cue}>{cue}</li>
+                    ))}
+                  </ul>
                 </div>
               </article>
             ))}
@@ -849,9 +964,13 @@ function App() {
       </main>
 
       <footer className="footer">
-        <span className="footer-brand"><Leaf size={15} /> FIELDMARK</span>
+        <span className="footer-brand">
+          <Leaf size={15} /> FIELDMARK
+        </span>
         <span>Visual quality guidance, not a food safety assessment.</span>
-        <span>MADE FOR THE FIELD <span className="footer-sun">✳</span></span>
+        <span>
+          MADE FOR THE FIELD <span className="footer-sun">✳</span>
+        </span>
       </footer>
     </div>
   )
