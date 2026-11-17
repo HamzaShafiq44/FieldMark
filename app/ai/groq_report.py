@@ -8,7 +8,7 @@ from groq import Groq
 from pydantic import SecretStr, ValidationError
 
 from app.ai.schemas import InspectionReportText, InspectionResult, ReportUserType
-from app.core.config import settings
+from app.core.config import DEFAULT_GROQ_REPORT_MODEL, settings
 
 LOGGER = logging.getLogger(__name__)
 FARMER_AUDIENCE_GUIDANCE: str = (
@@ -76,7 +76,7 @@ def write_inspection_report(
     client = _groq_client(settings.groq_api_key)
     try:
         response = client.chat.completions.create(
-            model=settings.groq_report_model or settings.groq_vision_model,
+            model=settings.groq_report_model or DEFAULT_GROQ_REPORT_MODEL,
             temperature=0,
             response_format={"type": "json_object"},
             messages=[

@@ -265,7 +265,7 @@ def test_report_text_rejects_fields_outside_its_schema() -> None:
 def test_groq_report_writer_passes_context_and_validates_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Fall back to the configured vision model and validate AI report JSON."""
+    """Use GPT OSS by default without changing the configured vision model."""
     monkeypatch.setattr(settings, "groq_api_key", SecretStr("report-test-key"))
     monkeypatch.setattr(settings, "groq_report_model", "")
     monkeypatch.setattr(settings, "groq_vision_model", "qwen/qwen3.8-27b")
@@ -304,7 +304,7 @@ def test_groq_report_writer_passes_context_and_validates_output(
     groq_client.assert_called_once_with(api_key="report-test-key")
     request = client.chat.completions.create.call_args.kwargs
     context = json.loads(request["messages"][1]["content"])
-    assert request["model"] == "qwen/qwen3.8-27b"
+    assert request["model"] == "openai/gpt-oss-20b"
     assert context["user_type"] == "farmer"
     assert "everyday, practical language" in context["farmer_audience_guidance"]
     assert context["voice_note_transcript"] == "I noticed a soft spot."
