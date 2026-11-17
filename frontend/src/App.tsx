@@ -20,7 +20,6 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type CSSProperties,
   type DragEvent,
 } from 'react'
 import './App.css'
@@ -30,7 +29,6 @@ import {
   inspectionThumbnailUrl,
   inspectProduce,
   listInspectionHistory,
-  type BoundingBox,
   type InspectionHistoryItem,
   type InspectionResult,
   type ProduceType,
@@ -111,16 +109,6 @@ type ApiStatus = 'checking' | 'connected' | 'offline'
 
 function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
-}
-
-function getBoxStyle(bbox: BoundingBox): CSSProperties {
-  const [x1, y1, x2, y2] = bbox
-  return {
-    left: `${x1 * 100}%`,
-    top: `${y1 * 100}%`,
-    width: `${(x2 - x1) * 100}%`,
-    height: `${(y2 - y1) * 100}%`,
-  }
 }
 
 function formatInspectionDate(value: string): string {
@@ -379,11 +367,6 @@ function App() {
                 <div className="image-preview">
                   <div className="image-canvas">
                     <img src={previewUrl} alt="Selected produce preview" />
-                    {result?.bbox && (
-                      <div className="bbox-overlay" style={getBoxStyle(result.bbox)}>
-                        <span>POSSIBLE DEFECT</span>
-                      </div>
-                    )}
                   </div>
                   <span className="preview-change"><RefreshCw size={14} /> Replace photo</span>
                 </div>
