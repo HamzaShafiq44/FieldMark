@@ -68,15 +68,19 @@ Add a Groq API key to the local `.env`, then build and start:
 docker compose up --build -d
 ```
 
-Open `http://localhost:8000`. The API and the built web UI are served from the same container;
-set `APP_PORT` (for example `APP_PORT=8080 docker compose up -d`) to use a different host port.
+Open the web UI at **http://localhost:3000**. The API (and Swagger docs) run separately at
+**http://localhost:8000**. Set `WEB_PORT` (for example `WEB_PORT=3001 docker compose up -d`) to use
+a different host port for the UI, and update `FRONTEND_ORIGIN` in `.env` to match. Set
+`VITE_API_BASE_URL` if the API is hosted elsewhere; it is baked into the frontend at build time, so
+rebuild the frontend image after changing it.
 
 Useful commands:
 
 ```bash
-docker compose logs -f app     # follow application logs
-docker compose restart app     # restart; inspection history is preserved
-docker compose down            # stop the container; inspection history is preserved
+docker compose logs -f backend     # follow API logs
+docker compose logs -f frontend    # follow web server logs
+docker compose restart backend     # restart the API; inspection history is preserved
+docker compose down                # stop both containers; inspection history is preserved
 ```
 
 Inspection history lives in the host `./data/` folder, bind-mounted at `/app/data`, so it survives

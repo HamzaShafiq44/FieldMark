@@ -365,13 +365,24 @@ def save_inspection_history(
         repository.save(result, image, original_image)
     except HistoryStorageError as exc:
         raise InspectionStorageError(str(exc)) from exc
+    # ---------------------------------------------------------------------
+    # Create an annotated image only when a bounding box is present.
+    # If the model supplied a bbox we annotate it; otherwise we skip
+    # annotation (the endpoint will return 404).  No automatic fallback
+    # full‑image annotation is performed.
+    # ---------------------------------------------------------------------
     if result.bbox is not None:
-        try:
-            repository.save_annotated(
-                result.inspection_id, annotate_photo(original_image, result.bbox)
-            )
-        except HistoryStorageError as exc:
-            LOGGER.warning("Annotated photo could not be saved: %s", exc)
+        # Use the model‑provided bbox.
+        bbox_to_use = result.bbox
+    else:
+        LOGGER.info("Result has no bbox; skipping annotation.")
+        return
+    try:
+        repository.save_annotated(
+            result.inspection_id, annotate_photo(original_image, bbox_to_use)
+        )
+    except Exception as exc:
+        LOGGER.warning("Annotated photo could not be saved: %s", exc)
 
 
 def list_inspection_history(limit: int, offset: int) -> InspectionHistoryResponse:

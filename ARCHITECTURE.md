@@ -310,32 +310,42 @@ module loggers (never `print`), exception *types* logged but never keys or perso
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VISION_PROVIDER` | `groq` | `groq` or `ollama` |
-| `GROQ_API_KEY` | *(empty)* | Required for the default provider |
-| `GROQ_VISION_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` | Vision model |
-| `GROQ_REPORT_MODEL` | *(empty → vision model)* | Report narrative model |
+| `VISION_PROVIDER` | `groq` | `groq`, `ollama`, or `gemini` |
+| `GROQ_API_KEY` | *(empty)* | Required for Groq vision, report writing, and transcription |
+| `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Vision model |
+| `GROQ_REPORT_MODEL` | `openai/gpt-oss-20b` | Report narrative model |
 | `GROQ_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Voice-note transcription |
+| `GEMINI_API_KEY` | *(empty)* | Required for the Gemini provider |
+| `GEMINI_VISION_MODEL` | `gemini-4-hydrogen` | Analysis model |
+| `GEMINI_LOCALIZATION_MODEL` | `gemini-3.5-flash-lite` | Second-stage defect box model |
+| `GEMINI_FALLBACK_MODELS` | `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite` | Tried on transient model errors |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Validated absolute HTTP(S) URL |
 | `OLLAMA_VISION_MODEL` | `qwen2.5vl:7b` | Local vision model |
 | `INSPECTION_DB_PATH` | `data/inspections.sqlite3` | Absolute in Docker (`/app/data/...`) |
+| `FRONTEND_ORIGIN` | `http://localhost:3000` | Allowed CORS origin for the separate frontend |
+| `VITE_API_BASE_URL` | `http://localhost:8000` | API URL baked into the frontend at build time |
+| `WEB_PORT` | `3000` | Host port for the frontend container |
 
 ## 12. Deployment
 
-Single container, single origin. A multi-stage `Dockerfile` builds the Vite bundle with Node,
-installs locked Python dependencies with `uv`, and runs Uvicorn as non-root user `inspector`
-(uid 10001). FastAPI serves the API routes first and mounts `frontend/dist` at `/` for
-everything else, so the SPA and the API share one origin and no CORS configuration is needed.
+Two containers, two origins. The backend image installs locked Python dependencies with `uv` and
+runs Uvicorn as non-root user `inspector` (uid 10001); it serves only API routes and `/health`. The
+frontend image builds the Vite bundle with Node and serves it with `vite preview`, including SPA
+fallback for routes such as `/categories`. CORS middleware in FastAPI allows the frontend origin
+(`FRONTEND_ORIGIN`, default `http://localhost:3000`).
 
-- Docker Compose publishes `${APP_PORT:-8000}:8000`, injects `.env` at runtime, and bind-mounts the
-  host `./data/` directory at `/app/data`, so inspection history survives restarts, rebuilds, and
-  `docker compose down`, and the SQLite file can be opened directly from the host. Deleting the
-  host `./data/` directory removes that data.
-- A `HEALTHCHECK` polls `/health` from inside the container.
+- Docker Compose publishes `8000:8000` for the backend and `${WEB_PORT:-3000}:3000` for the
+  frontend, injects `.env` at runtime, and bind-mounts the host `./data/` directory at `/app/data`
+  on the backend, so inspection history survives restarts, rebuilds, and `docker compose down`.
+  Deleting the host `./data/` directory removes that data.
+- `VITE_API_BASE_URL` is baked into the frontend bundle at build time; rebuild the frontend image
+  after changing it. The built-in Vite dev proxy keeps local `npm run dev` working unchanged.
+- A `HEALTHCHECK` polls `/health` from inside the backend container.
 - SQLite requires a single instance; do not scale to replicas or run on multi-node hosts.
 
 ## 13. Testing
 
-`uv run pytest --cov=app --cov-report=term-missing` — 80 tests, 88% line coverage.
+`uv run pytest --cov=app --cov-report=term-missing` — 104 tests, 87% line coverage.
 
 - `tests/test_api.py` — route behavior, status-code mapping, pagination, oversized/invalid
   uploads, report routes, an end-to-end happy path through the API with a mocked detector.

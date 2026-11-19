@@ -35,6 +35,12 @@ def isolate_history_database(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     monkeypatch.setattr(settings, "inspection_db_path", tmp_path / "inspections.sqlite3")
 
 
+def test_cors_allows_frontend_origin() -> None:
+    """Allow the separately hosted SPA to call the API."""
+    response = client.get("/health", headers={"Origin": "http://localhost:3000"})
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
 def _jpeg_bytes() -> bytes:
     """Create a small in-memory JPEG fixture."""
     buffer = BytesIO()

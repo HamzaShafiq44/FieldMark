@@ -1,5 +1,6 @@
 """HTTP routes for product inspections."""
 
+import logging
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -37,6 +38,7 @@ from app.services.report_service import (
 )
 
 router = APIRouter(prefix="/inspections")
+LOGGER = logging.getLogger(__name__)
 PAYLOAD_TOO_LARGE = "Image exceeds the maximum allowed size."
 DEFAULT_HISTORY_PAGE_SIZE = 20
 MAX_HISTORY_PAGE_SIZE = 100
@@ -70,16 +72,39 @@ async def inspect_product_route(
     image: Annotated[UploadFile, File()],
 ) -> InspectionResult:
     """Analyze an uploaded tomato, apple, banana, or orange image."""
+    LOGGER.info(
+        "Received inspection request: filename='%s', content_type='%s'",
+        image.filename,
+        image.content_type,
+    )
     data = await image.read(settings.max_image_bytes + 1)
     if len(data) > settings.max_image_bytes:
+        LOGGER.warning(
+            "Uploaded image exceeds size limit: %d > %d bytes",
+            len(data),
+            settings.max_image_bytes,
+        )
         raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=PAYLOAD_TOO_LARGE)
     try:
-        return await run_in_threadpool(inspect_produce, data)
+        result = await run_in_threadpool(inspect_produce, data)
+        LOGGER.info(
+            "Inspection %s succeeded: produce_type='%s', detected='%s', verdict='%s', grade='%s', bbox=%s",
+            result.inspection_id,
+            result.produce_type,
+            result.detected_item,
+            result.verdict,
+            result.grade,
+            result.bbox,
+        )
+        return result
     except InvalidImageError as exc:
+        LOGGER.warning("Invalid image uploaded: %s", exc)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except InspectionDetectionError as exc:
+        LOGGER.error("Inspection detection failed: %s", exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except InspectionStorageError as exc:
+        LOGGER.error("Inspection storage failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Inspection completed but could not be saved.",
@@ -165,15 +190,22 @@ async def inspection_annotated_route(inspection_id: UUID) -> Response:
 @router.post("/{inspection_id}/relocate", response_model=InspectionResult)
 async def relocate_defect_route(inspection_id: UUID) -> InspectionResult:
     """Locate and save the defect box for an inspection that has none."""
+    LOGGER.info("Defect relocation endpoint called for inspection_id=%s", inspection_id)
     try:
-        return await run_in_threadpool(relocate_defect, str(inspection_id))
+        result = await run_in_threadpool(relocate_defect, str(inspection_id))
+        LOGGER.info("Relocation completed for %s: bbox=%s", inspection_id, result.bbox)
+        return result
     except RelocationNotFoundError as exc:
+        LOGGER.warning("Relocation not found: %s", exc)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except RelocationNotApplicableError as exc:
+        LOGGER.warning("Relocation not applicable for %s: %s", inspection_id, exc)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except RelocationVisionError as exc:
+        LOGGER.error("Relocation vision failed for %s: %s", inspection_id, exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except (RelocationStorageError, DefectRelocationError) as exc:
+        LOGGER.error("Relocation storage failed for %s: %s", inspection_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
         ) from exc

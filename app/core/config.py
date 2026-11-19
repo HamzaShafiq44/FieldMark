@@ -22,6 +22,7 @@ MAX_VOICE_NOTE_BYTES = 25 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 ALLOWED_FORMATS = ("JPEG", "PNG", "WEBP")
 DEFAULT_INSPECTION_DB_PATH = BASE_DIR / "data" / "inspections.sqlite3"
+DEFAULT_FRONTEND_ORIGIN = "http://localhost:3000"
 
 
 class Settings(BaseSettings):
@@ -45,6 +46,8 @@ class Settings(BaseSettings):
     max_voice_note_bytes: int = MAX_VOICE_NOTE_BYTES
     max_image_pixels: int = MAX_IMAGE_PIXELS
     allowed_formats: tuple[str, ...] = ALLOWED_FORMATS
+    frontend_origin: str = DEFAULT_FRONTEND_ORIGIN
+    log_level: str = "INFO"
 
     @field_validator("ollama_base_url")
     @classmethod

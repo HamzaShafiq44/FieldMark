@@ -1,12 +1,3 @@
-# ---- frontend build ----
-FROM node:22-alpine AS frontend
-
-WORKDIR /frontend
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
-COPY frontend/ ./
-RUN npm run build
-
 # ---- runtime ----
 FROM python:3.12-slim AS runtime
 
@@ -22,7 +13,6 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY app ./app
-COPY --from=frontend /frontend/dist ./frontend/dist
 
 RUN useradd --create-home --uid 10001 inspector \
     && mkdir -p /app/data \
