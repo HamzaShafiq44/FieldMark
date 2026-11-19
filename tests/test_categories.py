@@ -66,6 +66,27 @@ def test_duplicate_and_reserved_names_are_rejected() -> None:
     assert client.post("/api/categories", json={"name": "A"}).status_code == 422
 
 
+def test_only_edible_fruit_can_be_added() -> None:
+    """Reject non-fruit category names when creating a category."""
+    for non_fruit in ("Car", "Chair", "Laptop", "Bicycle", "Toaster"):
+        response = client.post("/api/categories", json={"name": non_fruit})
+        assert response.status_code == 400, f"{non_fruit} should be rejected"
+        assert "fruit" in response.json()["detail"].lower()
+    # A valid fruit is still accepted.
+    assert client.post("/api/categories", json={"name": "Guava", "emoji": "🍈"}).status_code == 201
+
+
+def test_renaming_to_non_fruit_is_rejected() -> None:
+    """Reject renaming a category to a non-fruit name."""
+    assert client.post("/api/categories", json={"name": "Guava", "emoji": "🍈"}).status_code == 201
+    response = client.patch("/api/categories/guava", json={"name": "Car"})
+    assert response.status_code == 400
+    assert "fruit" in response.json()["detail"].lower()
+    # The name should be unchanged after a failed rename.
+    current = next(item for item in _list() if item["slug"] == "guava")
+    assert current["display_name"] == "Guava"
+
+
 def test_disabled_category_is_excluded_from_new_inspections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

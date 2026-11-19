@@ -18,6 +18,53 @@ MAX_ACTIVE_CATEGORIES = 20
 RESERVED_SLUGS = frozenset({"unknown"})
 SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 
+# Edible fruits users are allowed to add as inspection categories.
+ALLOWED_FRUITS = frozenset(
+    {
+        "apple",
+        "apricot",
+        "avocado",
+        "banana",
+        "blackberry",
+        "blueberry",
+        "cantaloupe",
+        "cherry",
+        "clementine",
+        "coconut",
+        "cranberry",
+        "date",
+        "dragonfruit",
+        "fig",
+        "gooseberry",
+        "grape",
+        "grapefruit",
+        "guava",
+        "honeydew",
+        "kiwi",
+        "kumquat",
+        "lemon",
+        "lime",
+        "lychee",
+        "mango",
+        "melon",
+        "nectarine",
+        "orange",
+        "papaya",
+        "passionfruit",
+        "peach",
+        "pear",
+        "persimmon",
+        "pineapple",
+        "plum",
+        "pomegranate",
+        "raspberry",
+        "strawberry",
+        "tangerine",
+        "tomato",
+        "watermelon",
+    }
+)
+
 
 class CategoryError(RuntimeError):
     """Base class for category service errors."""
@@ -78,6 +125,7 @@ def list_active_category_slugs() -> list[str]:
 def create_category(name: str, emoji: str | None = None) -> ProductCategory:
     """Validate and create a new active category."""
     display_name = _validate_name(name)
+    _validate_fruit(display_name)
     clean_emoji = _validate_emoji(emoji)
     slug = slugify(display_name)
     if slug in RESERVED_SLUGS:
@@ -113,6 +161,8 @@ def update_category(
 
         display_name = _validate_name(name) if name is not None else None
         clean_emoji = _validate_emoji(emoji) if emoji is not None else None
+        if display_name is not None:
+            _validate_fruit(display_name)
         if is_active is False and existing.is_active:
             active_slugs = repository.list_active_slugs()
             if len(active_slugs) <= 1:
@@ -166,6 +216,21 @@ def _validate_emoji(emoji: str | None) -> str:
     if len(clean_emoji) > MAX_EMOJI_LENGTH:
         raise CategoryValidationError("Emoji is too long.")
     return clean_emoji
+
+
+def _validate_fruit(display_name: str) -> None:
+    """Reject category names that are not edible fruits.
+
+    A name is accepted when any word in it matches an allowed fruit, so
+    variety names like "Alphonso Mango" or "Hass Avocado" are allowed.
+    """
+    slug = slugify(display_name)
+    words = slug.split("-")
+    if not any(word in ALLOWED_FRUITS for word in words):
+        raise CategoryValidationError(
+            "Only edible fruit categories are supported (for example: apple,"
+            " banana, orange, tomato)."
+        )
 
 
 def _repository() -> CategoryRepository:
