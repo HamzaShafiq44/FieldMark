@@ -20,6 +20,49 @@ import {
 } from '../services/categories'
 
 const MAX_EMOJI_LENGTH = 8
+const SUGGESTED_FRUITS = [
+  'Apple',
+  'Apricot',
+  'Avocado',
+  'Banana',
+  'Blackberry',
+  'Blueberry',
+  'Cantaloupe',
+  'Cherry',
+  'Clementine',
+  'Coconut',
+  'Cranberry',
+  'Date',
+  'Dragonfruit',
+  'Fig',
+  'Gooseberry',
+  'Grape',
+  'Grapefruit',
+  'Guava',
+  'Honeydew',
+  'Kiwi',
+  'Kumquat',
+  'Lemon',
+  'Lime',
+  'Lychee',
+  'Mango',
+  'Melon',
+  'Nectarine',
+  'Orange',
+  'Papaya',
+  'Passionfruit',
+  'Peach',
+  'Pear',
+  'Persimmon',
+  'Pineapple',
+  'Plum',
+  'Pomegranate',
+  'Raspberry',
+  'Strawberry',
+  'Tangerine',
+  'Tomato',
+  'Watermelon',
+]
 
 function formatCreatedAt(value: string): string {
   if (!value) return ''
@@ -289,6 +332,7 @@ function CategoriesPage() {
                           <input
                             value={editName}
                             maxLength={40}
+                            list="fruit-suggestions"
                             onChange={(event) => setEditName(event.currentTarget.value)}
                           />
                         </label>
@@ -402,12 +446,19 @@ function CategoriesPage() {
             </span>
           </div>
 
+          <datalist id="fruit-suggestions">
+            {SUGGESTED_FRUITS.map((fruit) => (
+              <option value={fruit} key={fruit} />
+            ))}
+          </datalist>
+
           <form className="category-form" onSubmit={handleAdd}>
             <label>
               Product name
               <input
                 value={name}
                 maxLength={40}
+                list="fruit-suggestions"
                 placeholder="Mango"
                 onChange={(event) => {
                   setName(event.currentTarget.value)
@@ -415,6 +466,7 @@ function CategoriesPage() {
                   setSuccessMessage(null)
                 }}
               />
+              <span className="field-hint">Only edible fruit names are allowed.</span>
             </label>
             <label>
               Emoji <span className="field-optional">optional</span>
@@ -460,6 +512,7 @@ function CategoriesPage() {
           <div className="category-note">
             <strong>How categories work</strong>
             <ul>
+              <li>Only edible fruit names can be added as categories.</li>
               <li>Active categories are included in the vision prompt.</li>
               <li>Other edible fruit is still graded, but marked as out of category.</li>
               <li>Non-edible items stay ungraded as unsupported items.</li>

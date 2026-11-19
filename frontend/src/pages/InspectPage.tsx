@@ -20,6 +20,7 @@ import {
   ApiError,
   classifyInspectionResult,
   clearInspectionHistory,
+  type Verdict,
   createInspectionReport,
   downloadInspectionReport,
   inspectionThumbnailUrl,
@@ -36,11 +37,13 @@ const MAX_VOICE_NOTE_BYTES = 25 * 1024 * 1024
 const PDF_URL_REVOKE_DELAY_MS = 1_000
 const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const ACCEPTED_IMAGE_EXTENSIONS = '.jpg, .jpeg, .png, .webp'
-const HERO_CARD_CLASSES = [
-  'fruit-card-main',
-  'fruit-card-tomato',
-  'fruit-card-banana',
-  'fruit-card-orange',
+// Hero art is decorative: these are layout slots, not bindings to specific fruits.
+// Reordering or adding categories changes which fruit fills each slot, never the layout.
+const HERO_CARD_SLOTS = [
+  'fruit-card-focus',
+  'fruit-card-upper-left',
+  'fruit-card-lower-right',
+  'fruit-card-upper-right',
 ]
 const FALLBACK_CATEGORIES: ProductCategory[] = [
   {
@@ -105,6 +108,21 @@ const VERDICT_LABELS: Record<InspectionResult['verdict'], string> = {
   pass: 'Looks good',
   defect: 'Defect detected',
   needs_review: 'Needs a closer look',
+}
+type HistoryFilter = 'all' | Verdict | 'unsupported'
+const HISTORY_FILTERS: { value: HistoryFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'pass', label: 'Looks good' },
+  { value: 'defect', label: 'Defects' },
+  { value: 'needs_review', label: 'Review' },
+  { value: 'unsupported', label: 'Unsupported' },
+]
+
+function matchesHistoryFilter(item: InspectionHistoryItem, filter: HistoryFilter): boolean {
+  if (filter === 'all') return true
+  const unsupported = classifyInspectionResult(item) === 'unsupported_item'
+  if (filter === 'unsupported') return unsupported
+  return !unsupported && item.verdict === filter
 }
 const RIPENESS_GUIDE = [
   {
@@ -186,6 +204,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [history, setHistory] = useState<InspectionHistoryItem[]>([])
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [isHistoryLoading, setIsHistoryLoading] = useState(true)
   const [isClearingHistory, setIsClearingHistory] = useState(false)
@@ -196,7 +215,8 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const resultClassification = result ? classifyInspectionResult(result) : null
   const isUnsupportedItem = resultClassification === 'unsupported_item'
   const activeCategories = categories.filter((category) => category.is_active)
-  const heroCategories = activeCategories.slice(0, HERO_CARD_CLASSES.length)
+  const heroCategories = activeCategories.slice(0, HERO_CARD_SLOTS.length)
+  const visibleHistory = history.filter((item) => matchesHistoryFilter(item, historyFilter))
 
   useEffect(
     () => () => {
@@ -433,7 +453,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
           <div className="orbit orbit-one" />
           <div className="orbit orbit-two" />
           {heroCategories.map((category, index) => (
-            <div className={`fruit-card ${HERO_CARD_CLASSES[index]}`} key={category.slug}>
+            <div className={`fruit-card ${HERO_CARD_SLOTS[index]}`} key={category.slug}>
               <span className="fruit-emoji">{category.emoji || '🌱'}</span>
               {index === 0 && (
                 <span className="fruit-label">{category.display_name.toUpperCase()}</span>
@@ -839,6 +859,22 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
             </button>
           </div>
         </div>
+        {history.length > 0 && (
+          <div className="history-filters" role="group" aria-label="Filter saved inspections">
+            {HISTORY_FILTERS.map(({ value, label }) => (
+              <button
+                key={value}
+                type="button"
+                className={`history-filter-chip ${historyFilter === value ? 'is-active' : ''}`}
+                aria-pressed={historyFilter === value}
+                onClick={() => setHistoryFilter(value)}
+              >
+                {label}
+                <span>{history.filter((item) => matchesHistoryFilter(item, value)).length}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {historyError ? (
           <div className="history-message history-error">
             <p>{historyError}</p>
@@ -848,9 +884,19 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
           </div>
         ) : isHistoryLoading && history.length === 0 ? (
           <p className="history-message">Loading saved inspections…</p>
-        ) : history.length ? (
+        ) : history.length === 0 ? (
+          <div className="history-empty">
+            <Clock3 size={20} />
+            <p>Your completed inspections will be saved here.</p>
+          </div>
+        ) : visibleHistory.length === 0 ? (
+          <div className="history-empty">
+            <Clock3 size={20} />
+            <p>No inspections match this filter. Choose another filter to see them.</p>
+          </div>
+        ) : (
           <div className="history-list">
-            {history.map((item) => {
+            {visibleHistory.map((item) => {
               const classification = classifyInspectionResult(item)
               const unsupported = classification === 'unsupported_item'
               return (
@@ -912,11 +958,6 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                 {reportError}
               </p>
             )}
-          </div>
-        ) : (
-          <div className="history-empty">
-            <Clock3 size={20} />
-            <p>Your completed inspections will be saved here.</p>
           </div>
         )}
       </section>

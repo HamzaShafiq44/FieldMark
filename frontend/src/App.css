@@ -268,7 +268,7 @@ main,
   box-shadow: 0 12px 30px rgba(49, 73, 48, 0.11);
 }
 
-.fruit-card-main {
+.fruit-card-focus {
   top: 99px;
   left: calc(50% - 48px);
   width: 96px;
@@ -283,7 +283,7 @@ main,
   line-height: 1;
 }
 
-.fruit-card-main .fruit-emoji {
+.fruit-card-focus .fruit-emoji {
   align-self: end;
   font-size: 43px;
 }
@@ -296,28 +296,28 @@ main,
   letter-spacing: 1.4px;
 }
 
-.fruit-card-tomato {
+.fruit-card-upper-left {
   top: 48px;
   left: calc(50% - 124px);
   transform: rotate(-11deg);
 }
 
-.fruit-card-tomato .fruit-emoji,
-.fruit-card-orange .fruit-emoji {
+.fruit-card-upper-left .fruit-emoji,
+.fruit-card-upper-right .fruit-emoji {
   font-size: 30px;
 }
 
-.fruit-card-banana {
+.fruit-card-lower-right {
   top: 173px;
   right: calc(50% - 163px);
   transform: rotate(9deg);
 }
 
-.fruit-card-banana .fruit-emoji {
+.fruit-card-lower-right .fruit-emoji {
   font-size: 31px;
 }
 
-.fruit-card-orange {
+.fruit-card-upper-right {
   top: 46px;
   right: calc(50% - 185px);
   width: 53px;
@@ -1434,19 +1434,19 @@ main,
     left: calc(50% - 107px);
   }
 
-  .fruit-card-main {
+  .fruit-card-focus {
     top: 71px;
   }
 
-  .fruit-card-tomato {
+  .fruit-card-upper-left {
     top: 36px;
   }
 
-  .fruit-card-banana {
+  .fruit-card-lower-right {
     top: 142px;
   }
 
-  .fruit-card-orange {
+  .fruit-card-upper-right {
     top: 34px;
   }
 
@@ -1623,6 +1623,52 @@ main,
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 16px;
+}
+
+.history-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--forest-2);
+  background: var(--white);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.history-filter-chip span {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0 4px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--pale-green);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-filter-chip.is-active {
+  border-color: var(--leaf);
+  color: var(--white);
+  background: var(--forest-2);
+}
+
+.history-filter-chip.is-active span {
+  color: var(--forest-2);
+  background: var(--lime);
 }
 
 .history-clear {
@@ -2481,6 +2527,14 @@ main,
   font-weight: 600;
   letter-spacing: 0.8px;
   text-transform: uppercase;
+}
+
+.field-hint {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .category-preview {
