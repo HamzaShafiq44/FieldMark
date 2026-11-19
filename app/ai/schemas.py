@@ -1,5 +1,6 @@
 """Validated schemas for vision findings and inspection results."""
 
+import re
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -40,7 +41,7 @@ class DefectType(StrEnum):
 
 
 class ProduceType(StrEnum):
-    """Product categories supported by the inspection pipeline."""
+    """Built-in product category slugs retained for compatibility."""
 
     TOMATO = "tomato"
     APPLE = "apple"
@@ -67,7 +68,7 @@ class VoiceNoteRelation(StrEnum):
 class Finding(BaseModel):
     """Validated, untrusted vision-model output."""
 
-    produce_type: ProduceType
+    produce_type: str = Field(min_length=1, max_length=40)
     detected_item: str = Field(default="", max_length=40)
     item_is_fruit: bool = False
     condition: Condition
@@ -83,17 +84,14 @@ class Finding(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def normalize_detected_type(cls, data: object) -> object:
-        """Treat an out-of-list fruit name as an unknown category with a detected item."""
+        """Normalize a model-reported category into a lowercase slug."""
         if not isinstance(data, dict):
             return data
         raw_type = str(data.get("produce_type", "")).strip().lower()
-        known_types = {item.value for item in ProduceType}
-        if raw_type and raw_type not in known_types:
-            updated = dict(data)
-            updated["produce_type"] = ProduceType.UNKNOWN.value
-            updated.setdefault("detected_item", raw_type)
-            return updated
-        return data
+        slug = re.sub(r"[^a-z0-9]+", "-", raw_type).strip("-")
+        updated = dict(data)
+        updated["produce_type"] = slug or "unknown"
+        return updated
 
     @model_validator(mode="after")
     def clear_invalid_bbox(self) -> "Finding":
@@ -110,7 +108,7 @@ class InspectionResult(BaseModel):
     """Final deterministic product grade and action for an inspected image."""
 
     inspection_id: str
-    produce_type: ProduceType
+    produce_type: str = Field(min_length=1, max_length=40)
     detected_item: str = Field(default="", max_length=40)
     item_is_fruit: bool = False
     in_inspection_categories: bool = True
@@ -125,6 +123,7 @@ class InspectionResult(BaseModel):
     verdict_notes: list[str]
     recommended_action: str
     disclaimer: str = DEFAULT_DISCLAIMER
+    report_available: bool = False
 
 
 class InspectionHistoryItem(BaseModel):
@@ -132,7 +131,7 @@ class InspectionHistoryItem(BaseModel):
 
     inspection_id: str
     created_at: str
-    produce_type: ProduceType
+    produce_type: str = Field(min_length=1, max_length=40)
     detected_item: str = ""
     item_is_fruit: bool = False
     in_inspection_categories: bool = True

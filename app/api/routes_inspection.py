@@ -153,8 +153,11 @@ async def generate_inspection_report_route(
 
 
 @router.get("/{inspection_id}/report")
-async def download_inspection_report_route(inspection_id: UUID) -> Response:
-    """Download a previously generated report from inspection history."""
+async def download_inspection_report_route(
+    inspection_id: UUID,
+    download: Annotated[bool, Query()] = True,
+) -> Response:
+    """Serve a previously generated report, as an attachment by default."""
     try:
         pdf = await run_in_threadpool(get_inspection_report, str(inspection_id))
     except InspectionReportError as exc:
@@ -167,7 +170,7 @@ async def download_inspection_report_route(inspection_id: UUID) -> Response:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=REPORT_NOT_FOUND,
         )
-    return _pdf_response(pdf, str(inspection_id))
+    return _pdf_response(pdf, str(inspection_id), download=download)
 
 
 async def _read_voice_note(voice_note: UploadFile | None) -> tuple[bytes | None, str]:
@@ -190,10 +193,13 @@ async def _read_voice_note(voice_note: UploadFile | None) -> tuple[bytes | None,
     return data, f"voice-note{suffix}"
 
 
-def _pdf_response(pdf: bytes, inspection_id: str) -> Response:
-    """Return a PDF as a browser-downloadable attachment."""
+def _pdf_response(pdf: bytes, inspection_id: str, *, download: bool = True) -> Response:
+    """Return a PDF as a browser-downloadable attachment or an inline document."""
+    disposition = "attachment" if download else "inline"
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="inspection-{inspection_id}.pdf"'},
+        headers={
+            "Content-Disposition": f'{disposition}; filename="inspection-{inspection_id}.pdf"'
+        },
     )

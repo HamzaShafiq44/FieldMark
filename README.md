@@ -20,9 +20,9 @@ flowchart LR
 
 The API route handles HTTP input and responses, the service validates images and applies grading
 rules, and the provider factory selects a vision implementation from configuration. Inspection
-results and small JPEG thumbnails are saved to SQLite at `data/inspections.sqlite3` by default.
-Original uploaded images are retained locally so inspection reports can include the source photo.
-Clearing inspection history deletes the saved images and reports. See
+metadata is saved to SQLite at `data/inspections.sqlite3` by default. Original photos and
+thumbnails are stored under `data/images/`, and generated PDFs under `data/reports/`; SQLite keeps
+only their file paths. Clearing inspection history deletes the saved images and reports. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for the component map, data model, API surface, failure
 modes, and deployment details.
 
@@ -79,15 +79,39 @@ docker compose down -v         # stop and delete the saved inspection history
 ```
 
 Inspection history lives in the `inspection-data` Docker volume mounted at `/app/data`, so it
-survives container restarts and rebuilds. Secrets come from the runtime `.env` file and are never
-baked into the image.
+survives container restarts and rebuilds. That volume is separate from the host `./data/` folder:
+when running with Docker, inspect the database with
+`docker compose exec app python -c "import sqlite3; ..."` or change the volume mapping to a host
+bind mount. Secrets come from the runtime `.env` file and are never baked into the image.
 
 ## Result behavior
 
 The vision model names the product in `detected_item` and marks whether it is an edible product
 in `item_is_fruit`. Edible products are graded with the same rules even when they are outside the
-four inspection categories; those results also state that the product is outside the categories.
+active inspection categories; those results also state that the product is outside the categories.
 Anything that is not an edible product is shown as an "Unsupported item" with no grade or verdict.
+
+Every edible product gets a one-page PDF report generated automatically during the inspection. If
+the AI-written narrative fails, the same layout is rebuilt with deterministic text; if rendering
+also fails, no report path is stored and the interface shows that the report is unavailable.
+Non-edible items do not get a PDF. An optional voice note updates the stored report with spoken
+context.
+
+## Inspection categories
+
+The Categories page (`/categories`) manages the products the inspector expects. The current
+categories are stored in SQLite, seeded with tomato, apple, banana, and orange, and sent to the
+vision model for every new inspection. Add a product name and an optional emoji to include it in
+future inspections; existing inspections and PDFs keep their original result.
+
+Categories can be renamed, disabled, or deleted. Disabling removes a category from new
+inspections while keeping historical records. A category that is referenced by saved inspections
+can only be disabled, not deleted. The API is available at `GET/POST /api/categories` and
+`PATCH/DELETE /api/categories/{slug}`.
+
+The web app uses client-side routes: `/` for inspection and `/categories` for category
+management. The FastAPI server returns `index.html` for `/categories` so the page also works on a
+direct refresh or shared link.
 
 ## Vision providers
 
@@ -101,10 +125,11 @@ silently switch providers if the selected provider fails.
 
 ## Inspection history
 
-Every successful inspection is stored locally in SQLite with its verdict, grade, product type,
-date, and a small thumbnail. The original photo is retained so PDF reports can include it. History
-is available through `GET /inspections/history`; each thumbnail is served from
-`GET /inspections/history/{inspection_id}/thumbnail`.
+Every successful inspection stores its result metadata in SQLite, a small thumbnail under
+`data/images/`, and the original photo under `data/images/` for PDF evidence. History is available
+through `GET /inspections/history`; each thumbnail is served from
+`GET /inspections/history/{inspection_id}/thumbnail`. A history item with a stored PDF shows a
+download button; otherwise the interface shows that the report is unavailable.
 
 Set `INSPECTION_DB_PATH` to use a different local database path. The default `data/` directory is
 ignored by Git.

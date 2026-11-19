@@ -98,7 +98,7 @@ def test_inspect_supported_produce(produce_type: ProduceType) -> None:
     result = inspect_produce(_jpeg_bytes(), detect=lambda _: finding)
     assert result.grade == "A"
     assert result.verdict == "pass"
-    assert result.produce_type is produce_type
+    assert result.produce_type == produce_type.value
     assert any("premium-grade criteria" in note for note in result.verdict_notes)
     assert all("%" not in note and "threshold" not in note.lower() for note in result.verdict_notes)
     assert any("verdict is pass" in note for note in result.verdict_notes)
@@ -221,7 +221,7 @@ def test_non_fruit_is_an_unsupported_item_without_a_grade() -> None:
 
 
 def test_out_of_category_type_from_model_is_kept_as_unknown() -> None:
-    """Accept a fruit name the model returns outside the enum instead of failing."""
+    """Accept any fruit slug and normalize inactive categories for grading."""
     finding = Finding.model_validate(
         {
             "produce_type": "guava",
@@ -231,8 +231,10 @@ def test_out_of_category_type_from_model_is_kept_as_unknown() -> None:
             "confidence": 0.9,
         }
     )
-    assert finding.produce_type is ProduceType.UNKNOWN
+    assert finding.produce_type == "guava"
     assert finding.detected_item == "guava"
     result = inspect_produce(_jpeg_bytes(), detect=lambda _: finding)
+    assert result.produce_type == ProduceType.UNKNOWN
+    assert result.detected_item == "guava"
     assert result.grade == "A"
     assert result.in_inspection_categories is False

@@ -1,15 +1,16 @@
 # Architecture — Fieldmark
 
 Software-only product grading for farmers. A photo goes in, a validated AI finding and
-deterministic grading rules come out as a verdict, quality grade, and recommended action, and any
-inspection can be turned into an AI-written PDF report. This document describes the system as it
-is implemented, not as it is planned; the README keeps the short version for first-time readers.
+deterministic grading rules come out as a verdict, quality grade, and recommended action, and an
+AI-written PDF report is generated automatically for every edible product. This document describes
+the system as it is implemented, not as it is planned; the README keeps the short version for
+first-time readers.
 
 ## 1. Purpose and scope
 
 **Goals.** Let a farmer upload or capture a product photo, receive a pass/defect verdict with a
 confidence score and a plain-language explanation, keep a local inspection history, and download
-a professional PDF report that folds in an optional voice note.
+a professional PDF report — generated automatically, with an optional voice note added afterwards.
 
 **Non-goals (out of scope per the project SOW).** Hardware and sensors, user accounts,
 multi-tenancy, payments, production deployment and scaling, and training models from scratch.
@@ -17,7 +18,7 @@ Inference uses a hosted API model (Groq) with an optional local Ollama provider 
 interface.
 
 **Chosen user type.** Farmer (product grading after harvest): bruises, rot, mold, and deformities
-on tomato, apple, banana, and orange photos, with quality grades (A / B / Reject) and
+on photos of the configured inspection categories, with quality grades (A / B / Reject) and
 sell-or-discard advice.
 
 ## 2. System context
@@ -46,7 +47,9 @@ exists for the optional local-model path and is never selected automatically.
 | Path | Responsibility |
 |---|---|
 | `app/api/routes_inspection.py` | HTTP boundary: multipart parsing, size/format guards, domain-to-HTTP error mapping, pagination limits |
-| `app/services/inspection_service.py` | Image validation (PIL), deterministic grading rules, verdict notes, persistence |
+| `app/api/routes_categories.py` | Category API: list, create, rename/enable/disable, delete |
+| `app/services/inspection_service.py` | Image validation (PIL), active-category loading, deterministic grading rules, verdict notes, persistence |
+| `app/services/category_service.py` | Category validation, slug generation, limits, and lifecycle rules |
 | `app/services/report_service.py` | Orchestrates transcription, AI narrative, PDF rendering, and report persistence |
 | `app/ai/provider_factory.py` | Builds the configured `VisionDetector` from settings (no network at construction) |
 | `app/ai/produce_groq.py` | Groq vision provider: base64 image prompt, JSON-mode response, schema validation |
@@ -55,10 +58,14 @@ exists for the optional local-model path and is never selected automatically.
 | `app/ai/schemas.py` | Pydantic contracts: `Finding`, `InspectionResult`, `InspectionReportText`, history models |
 | `app/ai/prompts.py` | System/user prompts for the vision model, including injection-hardening rules |
 | `app/reports/pdf_renderer.py` | One-page reportlab PDF: metadata, evidence photos, quick-scan card, narrative |
-| `app/storage/inspection_repository.py` | Parameterized SQLite access, thumbnail encoding, schema migration |
+| `app/storage/inspection_repository.py` | Parameterized SQLite access, image/report paths, schema migration |
+| `app/storage/category_repository.py` | Category persistence and default seeding in SQLite |
 | `app/core/config.py` | Environment-driven `Settings` with URL validation |
-| `frontend/src/services/api.ts` | Single frontend API boundary: typed calls, `ApiError`, URL building |
-| `frontend/src/App.tsx` | UI: upload/camera, result panel, report controls, history, clear |
+| `frontend/src/services/api.ts` | Inspection API boundary: typed calls, `ApiError`, URL building |
+| `frontend/src/services/categories.ts` | Category API calls and types |
+| `frontend/src/App.tsx` | App shell, navigation, theme, API status, routes |
+| `frontend/src/pages/InspectPage.tsx` | Upload/camera, result panel, report controls, history, clear |
+| `frontend/src/pages/CategoriesPage.tsx` | Category list, add/rename/enable/disable/delete |
 
 ## 4. Data flow
 
@@ -82,40 +89,56 @@ sequenceDiagram
     D-->>S: Finding
     S->>S: deterministic grade + verdict + notes
     S->>DB: save result_json, thumbnail, original image
+    S->>S: generate_automatic_report(id) for edible products
+    S->>DB: save report row and pdf_path (or leave NULL)
     S-->>API: InspectionResult
-    API-->>UI: verdict, grade, defects, severity, action
+    API-->>UI: verdict, grade, defects, severity, action, report_available
 ```
 
-### 4.2 Report generation with an optional voice note
+### 4.2 Automatic PDF report with fallback
 
 ```mermaid
 sequenceDiagram
     actor F as Farmer
     participant UI as React SPA
     participant API as FastAPI route
+    participant S as Inspection service
     participant R as Report service
-    participant T as Whisper transcription
     participant W as Report writer
     participant DB as SQLite
-    F->>UI: request PDF (+ optional voice note)
-    UI->>API: POST /inspections/{id}/report
-    API->>API: validate audio suffix, media type, size
-    API->>R: generate_inspection_report(id, user_type, audio)
+    F->>UI: upload or capture a photo
+    UI->>API: POST /inspections/product
+    API->>S: inspect_produce(image)
+    S->>DB: save result, thumbnail, original image
+    S->>R: generate_automatic_report(id) for edible products
     R->>DB: load original image + stored result
-    R->>T: transcribe (if audio supplied)
-    R->>W: write narrative from result + transcript
-    W->>W: validate InspectionReportText, check conflicts
+    R->>W: write narrative from result
+    alt AI narrative succeeds
+        W-->>R: validated InspectionReportText
+    else AI or rendering fails
+        R->>R: build deterministic report text, log failure
+    end
     R->>R: reportlab render with annotated photo
-    R->>DB: upsert report row (pdf + validated narrative)
-    R-->>API: PDF bytes
-    API-->>UI: application/pdf download
+    R->>DB: upsert report row and pdf_path
+    R-->>S: report_available
+    S-->>API: InspectionResult
+    API-->>UI: result + report_available
 ```
+
+Every edible product, including fruit outside the inspection categories, gets the same report
+layout. Non-edible items get no PDF. When AI report writing fails, the deterministic narrative
+uses the normal layout; if that fallback also fails, `pdf_path` stays NULL and the interface shows
+that the report is unavailable.
+
+Adding a voice note calls `POST /inspections/{id}/report`, which overwrites the stored PDF with a
+narrated version and returns it as a download.
+
 
 ### 4.3 History and clearing
 
 `GET /inspections/history` returns reverse-chronological summaries with `report_available` and
-`report_source_available` flags. `DELETE /inspections/history` deletes reports first, then
-inspections, inside one transaction. `GET .../thumbnail` streams the 192×192 JPEG preview.
+`report_source_available` flags. `DELETE /inspections/history` deletes database rows and removes
+the `images/` and `reports/` directories. `GET .../thumbnail` streams the 192×192 JPEG preview.
 
 ## 5. Data model
 
@@ -124,14 +147,22 @@ connection. All queries are parameterized.
 
 ```sql
 CREATE TABLE inspections (
-    inspection_id  TEXT PRIMARY KEY,
-    created_at     TEXT NOT NULL,        -- ISO-8601 UTC
-    produce_type   TEXT NOT NULL,
-    verdict        TEXT NOT NULL,        -- pass | defect | needs_review
-    grade          TEXT NOT NULL,        -- A | B | Reject | Needs manual review
-    thumbnail      BLOB NOT NULL,        -- 192x192 JPEG, quality 75
-    original_image BLOB,                 -- retained for report evidence
-    result_json    TEXT                  -- serialized InspectionResult
+    inspection_id       TEXT PRIMARY KEY,
+    created_at          TEXT NOT NULL,    -- ISO-8601 UTC
+    produce_type        TEXT NOT NULL,
+    verdict             TEXT NOT NULL,    -- pass | defect | needs_review
+    grade               TEXT NOT NULL,    -- A | B | Reject | Needs manual review
+    thumbnail_path      TEXT,             -- relative to the data directory
+    original_image_path TEXT,             -- relative to the data directory
+    result_json         TEXT              -- serialized InspectionResult
+);
+
+CREATE TABLE product_categories (
+    slug            TEXT PRIMARY KEY,    -- stable slug used by inspection results
+    display_name    TEXT NOT NULL,
+    emoji           TEXT NOT NULL DEFAULT '',
+    is_active       INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL
 );
 
 CREATE TABLE inspection_reports (
@@ -141,17 +172,29 @@ CREATE TABLE inspection_reports (
     user_type       TEXT NOT NULL,       -- farmer
     transcript      TEXT NOT NULL,       -- "" when no voice note
     report_text_json TEXT NOT NULL,      -- validated InspectionReportText
-    pdf             BLOB NOT NULL
+    pdf_path        TEXT                 -- NULL when no PDF could be created
 );
 ```
 
-A legacy migration adds `original_image` and `result_json` to databases created before reports
-stored source photos; legacy rows without those columns are rejected for reporting with HTTP 409
-rather than fabricated.
+The original four categories are seeded once per database. Active category slugs are loaded for
+every new inspection and passed to the vision prompt. Renaming changes only `display_name`; the
+slug stays stable. Disabling sets `is_active = 0` and removes the category from future prompts.
+Deletion is allowed only when no stored inspection references the slug; otherwise the API asks the
+client to disable it instead. At least one category must remain active.
 
-**Retention rules.** Every successful inspection stores the full result, a small thumbnail, and
-the original photo (required for report evidence). Clearing history deletes reports and
-inspections; originals are never written anywhere outside this database.
+Images and PDFs are files under the data directory: `data/images/{inspection_id}_original.bin`,
+`data/images/{inspection_id}_thumbnail.jpg`, and
+`data/reports/{inspection_id}_report.pdf`. SQLite stores only metadata and relative paths, so the
+database stays small and portable.
+
+A legacy migration rebuilds databases that still have `thumbnail` and `original_image` BLOB
+columns: existing BLOBs are written to `data/images/`, their paths are stored, and the BLOB columns
+are removed. Legacy rows without a source photo are rejected for reporting with HTTP 409 rather
+than fabricated.
+
+**Retention rules.** Every successful inspection stores the full result and metadata in SQLite,
+with the thumbnail and original photo on disk. Clearing history deletes the report and image
+directories along with the database rows. Images are never stored as BLOBs in SQLite.
 
 ## 6. API surface
 
@@ -164,7 +207,11 @@ inspections; originals are never written anywhere outside this database.
 | DELETE | `/inspections/history` | 204 | — | 500 |
 | GET | `/inspections/history/{id}/thumbnail` | 200 JPEG | 404 | 500 |
 | POST | `/inspections/{id}/report` | 200 PDF attachment | 400 invalid audio / transcript too long, 413 audio too large, 409 no source photo | 500 storage/render, 502 AI |
-| GET | `/inspections/{id}/report` | 200 PDF attachment | 404 | 500 |
+| GET | `/inspections/{id}/report?download=true` | 200 PDF attachment | 404 | 500 |
+| GET | `/api/categories` | 200 `{"items":[...]}` | — | 500 |
+| POST | `/api/categories` | 201 category | 400 invalid/reserved name, 409 duplicate/limit | 500 |
+| PATCH | `/api/categories/{slug}` | 200 category | 400 invalid/last active, 404 | 500 |
+| DELETE | `/api/categories/{slug}` | 204 | 400 last active, 404, 409 in use | 500 |
 | GET | `/health` | 200 `{"status":"ok"}` | — | — |
 
 Route parameters are typed as `UUID`, so malformed identifiers are rejected by FastAPI before
@@ -273,13 +320,14 @@ everything else, so the SPA and the API share one origin and no CORS configurati
 
 - Docker Compose publishes `${APP_PORT:-8000}:8000`, injects `.env` at runtime, and mounts the
   named volume `inspection-data` at `/app/data`, so inspection history survives restarts,
-  rebuilds, and `docker compose down` (only `down -v` deletes it).
+  rebuilds, and `docker compose down` (only `down -v` deletes it). The host `./data/` directory is
+  not used by Docker unless the volume mapping is changed to a bind mount.
 - A `HEALTHCHECK` polls `/health` from inside the container.
 - SQLite requires a single instance; do not scale to replicas or run on multi-node hosts.
 
 ## 13. Testing
 
-`uv run pytest --cov=app --cov-report=term-missing` — 60 tests, 90% line coverage.
+`uv run pytest --cov=app --cov-report=term-missing` — 80 tests, 88% line coverage.
 
 - `tests/test_api.py` — route behavior, status-code mapping, pagination, oversized/invalid
   uploads, report routes, an end-to-end happy path through the API with a mocked detector.
@@ -288,6 +336,8 @@ everything else, so the SPA and the API share one origin and no CORS configurati
   handling, network failure translation.
 - `tests/test_reports.py` — transcription, narrative validation, conflict handling, annotated
   photo rendering, one-page layout constraints, actionable AI error mapping.
+- `tests/test_categories.py` — category seeding, create/rename/disable/delete rules, and dynamic
+  categories in new inspections.
 - `tests/test_config.py` — settings defaults and Ollama URL validation.
 
 The AI model is always mocked (`monkeypatch`) in unit tests, so the suite is deterministic and

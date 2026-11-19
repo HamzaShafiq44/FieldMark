@@ -1,6 +1,7 @@
-"""SQLite repository for inspection summaries and image thumbnails."""
+"""SQLite repository for inspection metadata and on-disk image/report files."""
 
 import logging
+import shutil
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
@@ -18,6 +19,8 @@ LOGGER = logging.getLogger(__name__)
 THUMBNAIL_SIZE = (192, 192)
 THUMBNAIL_QUALITY = 75
 HISTORY_THUMBNAIL_PATH = "/inspections/history/{inspection_id}/thumbnail"
+IMAGES_DIRNAME = "images"
+REPORTS_DIRNAME = "reports"
 CREATE_HISTORY_TABLE = """
 CREATE TABLE IF NOT EXISTS inspections (
     inspection_id TEXT PRIMARY KEY,
@@ -25,14 +28,33 @@ CREATE TABLE IF NOT EXISTS inspections (
     produce_type TEXT NOT NULL,
     verdict TEXT NOT NULL,
     grade TEXT NOT NULL,
-    thumbnail BLOB NOT NULL,
-    original_image BLOB,
+    thumbnail_path TEXT,
+    original_image_path TEXT,
+    result_json TEXT
+)
+"""
+CREATE_HISTORY_TABLE_REBUILD = """
+CREATE TABLE inspections_new (
+    inspection_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    produce_type TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    grade TEXT NOT NULL,
+    thumbnail_path TEXT,
+    original_image_path TEXT,
     result_json TEXT
 )
 """
 INSERT_HISTORY_ITEM = """
 INSERT INTO inspections (
-    inspection_id, created_at, produce_type, verdict, grade, thumbnail, original_image, result_json
+    inspection_id, created_at, produce_type, verdict, grade,
+    thumbnail_path, original_image_path, result_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+"""
+INSERT_HISTORY_ITEM_REBUILD = """
+INSERT INTO inspections_new (
+    inspection_id, created_at, produce_type, verdict, grade,
+    thumbnail_path, original_image_path, result_json
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 """
 SELECT_HISTORY_ITEMS = """
@@ -40,15 +62,16 @@ SELECT inspection_id, created_at, produce_type, verdict, grade, result_json,
        EXISTS(
            SELECT 1 FROM inspection_reports
            WHERE inspection_reports.inspection_id = inspections.inspection_id
+             AND inspection_reports.pdf_path IS NOT NULL
        ) AS report_available,
-       original_image IS NOT NULL AND result_json IS NOT NULL AS report_source_available
+       original_image_path IS NOT NULL AND result_json IS NOT NULL AS report_source_available
 FROM inspections
 ORDER BY created_at DESC, inspection_id DESC
 LIMIT ? OFFSET ?
 """
-SELECT_THUMBNAIL = "SELECT thumbnail FROM inspections WHERE inspection_id = ?"
+SELECT_THUMBNAIL_PATH = "SELECT thumbnail_path FROM inspections WHERE inspection_id = ?"
 SELECT_REPORT_SOURCE = """
-SELECT created_at, original_image, result_json
+SELECT created_at, original_image_path, result_json
 FROM inspections
 WHERE inspection_id = ?
 """
@@ -101,9 +124,15 @@ class InspectionRepository:
         self.database_path = database_path
 
     def save(self, result: InspectionResult, image: Image.Image, original_image: bytes) -> None:
-        """Persist a result summary, original photo, and small preview image."""
+        """Persist metadata and write the original photo and thumbnail to disk."""
+        images_dir = self.database_path.parent / IMAGES_DIRNAME
+        original_path = images_dir / f"{result.inspection_id}_original.bin"
+        thumbnail_path = images_dir / f"{result.inspection_id}_thumbnail.jpg"
         try:
+            images_dir.mkdir(parents=True, exist_ok=True)
             thumbnail = _encode_thumbnail(image)
+            original_path.write_bytes(original_image)
+            thumbnail_path.write_bytes(thumbnail)
             created_at = datetime.now(UTC).isoformat()
             with self._connection() as connection:
                 connection.execute(
@@ -111,15 +140,17 @@ class InspectionRepository:
                     (
                         result.inspection_id,
                         created_at,
-                        result.produce_type.value,
+                        result.produce_type,
                         result.verdict,
                         result.grade,
-                        thumbnail,
-                        original_image,
+                        _stored_path(self.database_path.parent, thumbnail_path),
+                        _stored_path(self.database_path.parent, original_path),
                         result.model_dump_json(),
                     ),
                 )
         except (OSError, sqlite3.Error) as exc:
+            original_path.unlink(missing_ok=True)
+            thumbnail_path.unlink(missing_ok=True)
             LOGGER.error("Inspection history write failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection history could not be saved.") from exc
 
@@ -137,8 +168,11 @@ class InspectionRepository:
         """Return a stored thumbnail, or None when the inspection does not exist."""
         try:
             with self._connection() as connection:
-                row = connection.execute(SELECT_THUMBNAIL, (inspection_id,)).fetchone()
-            return bytes(row["thumbnail"]) if row is not None else None
+                row = connection.execute(SELECT_THUMBNAIL_PATH, (inspection_id,)).fetchone()
+            if row is None:
+                return None
+            path = _resolve_path(self.database_path.parent, row["thumbnail_path"])
+            return path.read_bytes() if path is not None and path.is_file() else None
         except (OSError, sqlite3.Error) as exc:
             LOGGER.error("Inspection thumbnail read failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection thumbnail could not be loaded.") from exc
@@ -148,11 +182,14 @@ class InspectionRepository:
         try:
             with self._connection() as connection:
                 row = connection.execute(SELECT_REPORT_SOURCE, (inspection_id,)).fetchone()
-            if row is None or row["original_image"] is None or row["result_json"] is None:
+            if row is None or row["original_image_path"] is None or row["result_json"] is None:
+                return None
+            original_path = _resolve_path(self.database_path.parent, row["original_image_path"])
+            if original_path is None or not original_path.is_file():
                 return None
             return InspectionReportSource(
                 created_at=row["created_at"],
-                original_image=bytes(row["original_image"]),
+                original_image=original_path.read_bytes(),
                 result=InspectionResult.model_validate_json(row["result_json"]),
             )
         except (OSError, sqlite3.Error, ValidationError) as exc:
@@ -168,14 +205,12 @@ class InspectionRepository:
         report_text_json: str,
         pdf: bytes,
     ) -> None:
-        """Persist a generated PDF and its validated source narrative."""
-        # Save PDF to disk and store path in database
+        """Persist a generated PDF on disk and store its path in SQLite."""
         try:
-            reports_dir = self.database_path.parent / "reports"
+            reports_dir = self.database_path.parent / REPORTS_DIRNAME
             reports_dir.mkdir(parents=True, exist_ok=True)
             pdf_path = reports_dir / f"{inspection_id}_report.pdf"
-            with open(pdf_path, "wb") as f:
-                f.write(pdf)
+            pdf_path.write_bytes(pdf)
 
             created_at = datetime.now(UTC).isoformat()
             with self._connection() as connection:
@@ -188,7 +223,7 @@ class InspectionRepository:
                         user_type.value,
                         transcript,
                         report_text_json,
-                        str(pdf_path),
+                        _stored_path(self.database_path.parent, pdf_path),
                     ),
                 )
         except (OSError, sqlite3.Error) as exc:
@@ -200,41 +235,46 @@ class InspectionRepository:
         try:
             with self._connection() as connection:
                 row = connection.execute(SELECT_REPORT_PDF, (inspection_id,)).fetchone()
-            if row is None or row["pdf_path"] is None:
+            if row is None:
                 return None
-            pdf_path = Path(row["pdf_path"])
-            if pdf_path.exists():
-                return pdf_path.read_bytes()
-            return None
+            pdf_path = _resolve_path(self.database_path.parent, row["pdf_path"])
+            return pdf_path.read_bytes() if pdf_path is not None and pdf_path.is_file() else None
         except (OSError, sqlite3.Error) as exc:
             LOGGER.error("Inspection report read failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection report could not be loaded.") from exc
 
     def clear_history(self) -> None:
-        """Delete all saved inspection records and generated reports atomically."""
+        """Delete all saved inspection records, images, and generated reports."""
         try:
             with self._connection() as connection:
                 connection.execute(DELETE_REPORTS)
-                # Also delete PDF files from disk
-                reports_dir = self.database_path.parent / "reports"
-                if reports_dir.exists():
-                    import shutil
-
-                    shutil.rmtree(reports_dir)
                 connection.execute(DELETE_INSPECTIONS)
+            for dirname in (IMAGES_DIRNAME, REPORTS_DIRNAME):
+                directory = self.database_path.parent / dirname
+                if directory.exists():
+                    shutil.rmtree(directory)
         except (OSError, sqlite3.Error) as exc:
             LOGGER.error("Inspection history clear failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection history could not be cleared.") from exc
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        """Open a database connection and ensure the history table exists."""
+        """Open a connection and migrate any pre-file-storage schema."""
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.database_path)) as connection:
             connection.row_factory = sqlite3.Row
-            connection.execute(CREATE_HISTORY_TABLE)
-            _add_missing_history_columns(connection)
-            connection.execute(CREATE_REPORTS_TABLE)
+            with connection:
+                connection.execute(CREATE_HISTORY_TABLE)
+                migrated = _migrate_history_schema(connection, self.database_path.parent)
+                connection.execute(CREATE_REPORTS_TABLE)
+            if migrated:
+                try:
+                    connection.execute("VACUUM")
+                except sqlite3.Error as exc:
+                    LOGGER.warning(
+                        "SQLite VACUUM after image migration failed (%s).",
+                        type(exc).__name__,
+                    )
             with connection:
                 yield connection
 
@@ -268,13 +308,79 @@ def _stored_result(raw: str | None) -> InspectionResult | None:
         return None
 
 
-def _add_missing_history_columns(connection: sqlite3.Connection) -> None:
-    """Migrate databases created before original report sources were stored."""
+def _migrate_history_schema(connection: sqlite3.Connection, database_dir: Path) -> bool:
+    """Move legacy image BLOBs to files and replace the old table schema."""
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(inspections)")}
-    if "original_image" not in columns:
-        connection.execute("ALTER TABLE inspections ADD COLUMN original_image BLOB")
-    if "result_json" not in columns:
-        connection.execute("ALTER TABLE inspections ADD COLUMN result_json TEXT")
+    if "thumbnail" not in columns and "original_image" not in columns:
+        return False
+
+    LOGGER.info("Migrating legacy inspection images out of SQLite.")
+    images_dir = database_dir / IMAGES_DIRNAME
+    images_dir.mkdir(parents=True, exist_ok=True)
+    rows = connection.execute("SELECT * FROM inspections").fetchall()
+    connection.execute("DROP TABLE IF EXISTS inspections_new")
+    connection.execute(CREATE_HISTORY_TABLE_REBUILD)
+
+    for row in rows:
+        inspection_id = row["inspection_id"]
+        thumbnail_path = _row_text(row, "thumbnail_path")
+        original_image_path = _row_text(row, "original_image_path")
+
+        if thumbnail_path is None and "thumbnail" in columns:
+            thumbnail = row["thumbnail"]
+            if thumbnail is not None:
+                path = images_dir / f"{inspection_id}_thumbnail.jpg"
+                path.write_bytes(bytes(thumbnail))
+                thumbnail_path = _stored_path(database_dir, path)
+
+        if original_image_path is None and "original_image" in columns:
+            original_image = row["original_image"]
+            if original_image is not None:
+                path = images_dir / f"{inspection_id}_original.bin"
+                path.write_bytes(bytes(original_image))
+                original_image_path = _stored_path(database_dir, path)
+
+        connection.execute(
+            INSERT_HISTORY_ITEM_REBUILD,
+            (
+                inspection_id,
+                row["created_at"],
+                row["produce_type"],
+                row["verdict"],
+                row["grade"],
+                thumbnail_path,
+                original_image_path,
+                _row_text(row, "result_json"),
+            ),
+        )
+
+    connection.execute("DROP TABLE inspections")
+    connection.execute("ALTER TABLE inspections_new RENAME TO inspections")
+    return True
+
+
+def _row_text(row: sqlite3.Row, name: str) -> str | None:
+    """Read an optional text column from a row that may predate that column."""
+    if name not in row.keys():
+        return None
+    value = row[name]
+    return value if isinstance(value, str) else None
+
+
+def _stored_path(base: Path, path: Path) -> str:
+    """Store paths relative to the data directory so the database stays portable."""
+    try:
+        return str(path.relative_to(base))
+    except ValueError:
+        return str(path)
+
+
+def _resolve_path(base: Path, stored: str | None) -> Path | None:
+    """Resolve a stored path, accepting both relative and legacy absolute values."""
+    if not stored:
+        return None
+    path = Path(stored)
+    return path if path.is_absolute() else base / path
 
 
 def _encode_thumbnail(image: Image.Image) -> bytes:

@@ -1,5 +1,6 @@
 """HTTP API tests using deterministic fake produce detections."""
 
+import sqlite3
 from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
@@ -85,6 +86,31 @@ def test_history_starts_empty_and_validates_pagination() -> None:
     assert response.json() == {"items": []}
     assert client.get("/inspections/history?limit=0").status_code == 422
     assert client.get("/inspections/history?offset=-1").status_code == 422
+
+
+def test_images_are_saved_to_files_not_sqlite(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep original photos and thumbnails outside the SQLite database."""
+    finding = Finding(
+        produce_type=ProduceType.APPLE,
+        condition=Condition.FRESH,
+        confidence=0.9,
+    )
+    _patch_detector(monkeypatch, lambda _: finding)
+    inspection = client.post(
+        "/inspections/produce",
+        files={"image": ("apple.jpg", _jpeg_bytes())},
+    ).json()
+    inspection_id = inspection["inspection_id"]
+    data_dir = settings.inspection_db_path.parent
+
+    assert (data_dir / "images" / f"{inspection_id}_original.bin").is_file()
+    assert (data_dir / "images" / f"{inspection_id}_thumbnail.jpg").is_file()
+    with sqlite3.connect(settings.inspection_db_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(inspections)")}
+    assert "thumbnail" not in columns
+    assert "original_image" not in columns
+    assert "thumbnail_path" in columns
+    assert "original_image_path" in columns
 
 
 def test_clear_history_deletes_inspections_and_reports(
@@ -232,6 +258,25 @@ def test_generate_report_route_returns_pdf(monkeypatch: pytest.MonkeyPatch) -> N
     assert response.headers["content-type"] == "application/pdf"
     assert "attachment" in response.headers["content-disposition"]
     assert response.content == b"%PDF-test"
+
+
+def test_download_report_route_serves_attachment_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Download a stored PDF as an attachment when the client asks for it."""
+    monkeypatch.setattr(
+        routes_inspection,
+        "get_inspection_report",
+        lambda _: b"%PDF-stored",
+    )
+    inspection_id = "00000000-0000-0000-0000-000000000001"
+
+    response = client.get(f"/inspections/{inspection_id}/report?download=true")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.content == b"%PDF-stored"
 
 
 def test_report_route_rejects_transcript_that_cannot_fit_one_page(

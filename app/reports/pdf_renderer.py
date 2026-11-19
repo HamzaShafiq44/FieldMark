@@ -397,7 +397,7 @@ def _photo_table_style() -> TableStyle:
 def _details_table(styles: dict[str, ParagraphStyle], result: InspectionResult) -> Table:
     """Render product and defect labels without deriving new findings."""
     defect_types = ", ".join(item.value for item in result.defect_types) or "None reported"
-    product_label = result.detected_item.strip().title() or result.produce_type.value.title()
+    product_label = result.detected_item.strip().title() or result.produce_type.title()
     rows = [
         [_cell(styles, "Product type", True), _cell(styles, product_label)],
         [_cell(styles, "Defect type", True), _cell(styles, defect_types.title())],

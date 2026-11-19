@@ -21,6 +21,8 @@ from app.ai.schemas import (
     Verdict,
 )
 from app.core.config import settings
+from app.services.category_service import CategoryError, list_active_category_slugs
+from app.services.report_service import generate_automatic_report
 from app.storage.inspection_repository import HistoryStorageError, InspectionRepository
 
 LOGGER = logging.getLogger(__name__)
@@ -83,7 +85,7 @@ def grade(finding: Finding) -> tuple[Grade, str]:
     the configured inspection categories. Anything that is not an edible product
     is kept for manual review and gets no quality grade.
     """
-    in_categories = finding.produce_type is not ProduceType.UNKNOWN
+    in_categories = finding.produce_type != ProduceType.UNKNOWN
     if not (finding.item_is_fruit or in_categories):
         return REVIEW
     if finding.condition is Condition.UNSURE:
@@ -136,10 +138,8 @@ def _fresh_grade_notes(finding: Finding, grade_value: Grade) -> list[str]:
 
 def _grade_notes(finding: Finding, grade_value: Grade) -> list[str]:
     """Explain the conditions that selected the grade."""
-    if finding.produce_type is ProduceType.UNKNOWN and not finding.item_is_fruit:
+    if finding.produce_type == ProduceType.UNKNOWN and not finding.item_is_fruit:
         return ["The photo does not show an edible product, so no quality grade applies."]
-    if finding.produce_type is ProduceType.UNKNOWN and grade_value == "Needs manual review":
-        return ["The product is outside the inspection categories, so manual review is required."]
     if finding.condition is Condition.UNSURE:
         return ["The product condition is unclear, so manual review is required."]
     if finding.condition is Condition.ROTTEN:
@@ -178,9 +178,34 @@ def _verdict_notes(finding: Finding, grade_value: Grade, verdict_value: Verdict)
     ]
 
 
-def _in_inspection_categories(finding: Finding) -> bool:
-    """Return whether the detected product belongs to the inspection categories."""
-    return finding.produce_type is not ProduceType.UNKNOWN
+def _in_inspection_categories(finding: Finding, active_slugs: list[str]) -> bool:
+    """Return whether the detected product belongs to the active categories."""
+    return finding.produce_type in active_slugs
+
+
+def _is_edible_product(result: InspectionResult) -> bool:
+    """Return whether the result can receive a normal product report."""
+    return result.item_is_fruit or result.produce_type != ProduceType.UNKNOWN
+
+
+def _normalize_category(finding: Finding, active_slugs: list[str]) -> Finding:
+    """Map inactive or unknown categories to the generic unknown slug."""
+    if finding.produce_type == ProduceType.UNKNOWN or finding.produce_type in active_slugs:
+        return finding
+    detected_item = finding.detected_item.strip() or finding.produce_type
+    return finding.model_copy(
+        update={"produce_type": ProduceType.UNKNOWN, "detected_item": detected_item}
+    )
+
+
+def _active_category_slugs() -> list[str]:
+    """Load the active category slugs, falling back to the built-in defaults."""
+    try:
+        active = list_active_category_slugs()
+    except CategoryError:
+        LOGGER.warning("Category storage unavailable; using default inspection categories.")
+        return list(DEFAULT_SUPPORTED_TYPES)
+    return active or list(DEFAULT_SUPPORTED_TYPES)
 
 
 def inspect_produce(
@@ -189,7 +214,7 @@ def inspect_produce(
     supported_types: list[str] | None = None,
 ) -> InspectionResult:
     """Validate, analyze, and grade an uploaded product image."""
-    supported = supported_types or list(DEFAULT_SUPPORTED_TYPES)
+    supported = supported_types or _active_category_slugs()
     image = load_and_validate_image(data)
     detector = detect
     if detector is None:
@@ -198,6 +223,7 @@ def inspect_produce(
         finding = detector(image)
     except DetectionError as exc:
         raise InspectionDetectionError("Vision detection failed.") from exc
+    finding = _normalize_category(finding, supported)
     grade_value, action = grade(finding)
     verdict_value = _verdict(grade_value, finding)
     result = InspectionResult(
@@ -205,7 +231,7 @@ def inspect_produce(
         produce_type=finding.produce_type,
         detected_item=finding.detected_item.strip(),
         item_is_fruit=finding.item_is_fruit,
-        in_inspection_categories=_in_inspection_categories(finding),
+        in_inspection_categories=_in_inspection_categories(finding, supported),
         verdict=verdict_value,
         confidence=finding.confidence,
         bbox=finding.bbox,
@@ -216,7 +242,13 @@ def inspect_produce(
         recommended_action=action,
     )
     save_inspection_history(result, image, data)
-    return result
+    report_available = False
+    if _is_edible_product(result):
+        try:
+            report_available = generate_automatic_report(result.inspection_id)
+        except Exception:
+            LOGGER.exception("Automatic report generation failed unexpectedly.")
+    return result.model_copy(update={"report_available": report_available})
 
 
 def save_inspection_history(

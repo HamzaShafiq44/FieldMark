@@ -4,10 +4,16 @@ import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from pydantic import ValidationError
 from reportlab.platypus.doctemplate import LayoutError
 
 from app.ai.groq_report import ReportAIError, transcribe_voice_note, write_inspection_report
-from app.ai.schemas import InspectionReportText, InspectionResult, ReportUserType
+from app.ai.schemas import (
+    InspectionReportText,
+    InspectionResult,
+    ReportUserType,
+    VoiceNoteRelation,
+)
 from app.core.config import settings
 from app.reports.pdf_renderer import build_inspection_pdf
 from app.storage.inspection_repository import (
@@ -35,6 +41,85 @@ class InspectionReportInputError(InspectionReportError):
 
 class InspectionReportAIError(InspectionReportError):
     """Raised when transcription or AI report writing fails."""
+
+
+def generate_automatic_report(inspection_id: str) -> bool:
+    """Generate and persist the default report, falling back to deterministic text.
+
+    Returns True when a PDF was saved. AI or rendering failures never fail the
+    inspection itself; the record is left without a PDF so the interface can show
+    that the report is unavailable.
+    """
+    try:
+        generate_inspection_report(inspection_id, ReportUserType.FARMER)
+        return True
+    except InspectionReportError as exc:
+        LOGGER.warning(
+            "Automatic report generation failed (%s); trying the deterministic fallback.",
+            type(exc).__name__,
+        )
+    return _generate_deterministic_report(inspection_id)
+
+
+def _generate_deterministic_report(inspection_id: str) -> bool:
+    """Render the normal report layout without the AI narrative."""
+    repository = InspectionRepository(settings.inspection_db_path)
+    try:
+        source = _load_report_source(repository, inspection_id)
+        report_text = _deterministic_report_text(source.result)
+        report_id = str(uuid4())
+        pdf = _render_report(
+            report_id,
+            source,
+            ReportUserType.FARMER,
+            report_text,
+            "",
+        )
+        _save_report(
+            repository,
+            inspection_id,
+            report_id,
+            ReportUserType.FARMER,
+            "",
+            report_text,
+            pdf,
+        )
+    except (InspectionReportError, ValidationError) as exc:
+        LOGGER.error("Deterministic report fallback failed (%s).", type(exc).__name__)
+        return False
+    return True
+
+
+def _deterministic_report_text(result: InspectionResult) -> InspectionReportText:
+    """Build valid report text directly from the inspection result."""
+    product = result.detected_item.strip().title() or result.produce_type.title()
+    verdict = result.verdict.replace("_", " ")
+    summary = f"{product}: grade {result.grade}, verdict {verdict}."
+    findings = [_shorten(note, 180) for note in result.verdict_notes if note.strip()][:3]
+    if not findings:
+        findings = ["The visual inspection completed without additional notes."]
+    recommendations = [
+        item
+        for item in dict.fromkeys(
+            [
+                _shorten(result.recommended_action, 140),
+                "Inspect manually before acting.",
+            ]
+        )
+        if item
+    ][:3]
+    return InspectionReportText(
+        summary=_shorten(summary, 300),
+        findings=findings,
+        recommendations=recommendations,
+        voice_note_relation=VoiceNoteRelation.NOT_PROVIDED,
+    )
+
+
+def _shorten(text: str, limit: int) -> str:
+    """Trim text to a validated report-field length."""
+    cleaned = " ".join(text.split())
+    return cleaned[:limit].rstrip()
 
 
 def generate_inspection_report(

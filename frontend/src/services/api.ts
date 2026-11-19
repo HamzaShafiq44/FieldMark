@@ -1,11 +1,12 @@
 /** Typed API calls used by the inspection interface. */
 
-export type ProduceType = 'tomato' | 'apple' | 'banana' | 'orange' | 'unknown'
+export type ProduceType = string
 export type Verdict = 'pass' | 'defect' | 'needs_review'
 export type Grade = 'A' | 'B' | 'Reject' | 'Needs manual review'
 export type Severity = 'none' | 'low' | 'medium' | 'high'
 export type DefectType = 'bruise' | 'rot' | 'mold' | 'deformity'
 export type BoundingBox = [number, number, number, number]
+export type ApiStatus = 'checking' | 'connected' | 'offline'
 
 export interface InspectionResult {
   inspection_id: string
@@ -22,6 +23,7 @@ export interface InspectionResult {
   verdict_notes: string[]
   recommended_action: string
   disclaimer: string
+  report_available: boolean
 }
 
 export interface InspectionHistoryItem {
@@ -69,7 +71,7 @@ export class ApiError extends Error {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
 
-function apiUrl(path: string): string {
+export function apiUrl(path: string): string {
   return `${API_BASE_URL}${path}`
 }
 
@@ -136,7 +138,7 @@ export async function createInspectionReport(
 }
 
 export async function downloadInspectionReport(inspectionId: string): Promise<Blob> {
-  const response = await fetch(reportUrl(inspectionId))
+  const response = await fetch(`${reportUrl(inspectionId)}?download=true`)
   if (!response.ok) throw await reportApiError(response)
   return response.blob()
 }

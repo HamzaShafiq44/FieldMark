@@ -398,3 +398,158 @@ def test_legacy_history_migrates_without_fabricating_source_images(tmp_path: Pat
     assert history_item.report_available is False
     assert history_item.report_source_available is False
     assert repository.get_report_source("legacy-id") is None
+    assert repository.get_thumbnail("legacy-id") == b"thumbnail"
+    assert (tmp_path / "images" / "legacy-id_thumbnail.jpg").is_file()
+
+
+def test_legacy_image_blobs_are_moved_to_files(tmp_path: Path) -> None:
+    """Move legacy original photos and thumbnails out of SQLite during migration."""
+    image_data = _jpeg_bytes()
+    result = inspection_service.inspect_produce(
+        image_data,
+        detect=lambda _: Finding(
+            produce_type=ProduceType.APPLE,
+            condition=Condition.FRESH,
+            confidence=0.9,
+        ),
+    )
+    database_path = tmp_path / "legacy-source.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE inspections (
+                inspection_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                produce_type TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                grade TEXT NOT NULL,
+                thumbnail BLOB NOT NULL,
+                original_image BLOB,
+                result_json TEXT
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO inspections VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                result.inspection_id,
+                "2026-01-01T00:00:00+00:00",
+                result.produce_type,
+                result.verdict,
+                result.grade,
+                b"thumbnail",
+                image_data,
+                result.model_dump_json(),
+            ),
+        )
+    repository = InspectionRepository(database_path)
+
+    history_item = repository.list_history(10, 0)[0]
+    source = repository.get_report_source(result.inspection_id)
+
+    assert history_item.report_source_available is True
+    assert repository.get_thumbnail(result.inspection_id) == b"thumbnail"
+    assert source is not None
+    assert source.original_image == image_data
+    assert (tmp_path / "images" / f"{result.inspection_id}_original.bin").is_file()
+    with sqlite3.connect(database_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(inspections)")}
+    assert "thumbnail" not in columns
+    assert "original_image" not in columns
+    assert "thumbnail_path" in columns
+    assert "original_image_path" in columns
+
+
+def test_automatic_report_is_persisted_for_an_edible_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Generate the default PDF during inspection without a user action."""
+    monkeypatch.setattr(
+        inspection_service, "generate_automatic_report", report_service.generate_automatic_report
+    )
+    monkeypatch.setattr(report_service, "write_inspection_report", lambda *_: _report_text())
+    result = inspection_service.inspect_produce(
+        _jpeg_bytes(),
+        detect=lambda _: Finding(
+            produce_type=ProduceType.APPLE,
+            detected_item="apple",
+            item_is_fruit=True,
+            condition=Condition.FRESH,
+            confidence=0.9,
+        ),
+    )
+    assert result.report_available is True
+    pdf = InspectionRepository(settings.inspection_db_path).get_report_pdf(result.inspection_id)
+    assert pdf is not None
+    assert pdf.startswith(b"%PDF-")
+
+
+def test_automatic_report_uses_the_normal_layout_for_out_of_category_food(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Give edible products outside the categories the same report as other products."""
+    monkeypatch.setattr(
+        inspection_service, "generate_automatic_report", report_service.generate_automatic_report
+    )
+    monkeypatch.setattr(report_service, "write_inspection_report", lambda *_: _report_text())
+    result = inspection_service.inspect_produce(
+        _jpeg_bytes(),
+        detect=lambda _: Finding(
+            produce_type=ProduceType.UNKNOWN,
+            detected_item="guava",
+            item_is_fruit=True,
+            condition=Condition.FRESH,
+            confidence=0.9,
+        ),
+    )
+    assert result.in_inspection_categories is False
+    assert result.report_available is True
+    pdf = InspectionRepository(settings.inspection_db_path).get_report_pdf(result.inspection_id)
+    assert pdf is not None
+    assert pdf.startswith(b"%PDF-")
+
+
+def test_automatic_report_falls_back_when_ai_writing_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep a downloadable PDF when the AI narrative cannot be produced."""
+    monkeypatch.setattr(
+        inspection_service, "generate_automatic_report", report_service.generate_automatic_report
+    )
+
+    def fail_report(*_: object) -> InspectionReportText:
+        raise groq_report.ReportAIError("rate limited")
+
+    monkeypatch.setattr(report_service, "write_inspection_report", fail_report)
+    result = inspection_service.inspect_produce(
+        _jpeg_bytes(),
+        detect=lambda _: Finding(
+            produce_type=ProduceType.ORANGE,
+            condition=Condition.FRESH,
+            confidence=0.9,
+        ),
+    )
+    assert result.report_available is True
+    pdf = InspectionRepository(settings.inspection_db_path).get_report_pdf(result.inspection_id)
+    assert pdf is not None
+    assert pdf.startswith(b"%PDF-")
+
+
+def test_non_edible_item_gets_no_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave pdf_path empty for an item outside the food categories."""
+    monkeypatch.setattr(
+        inspection_service, "generate_automatic_report", report_service.generate_automatic_report
+    )
+    result = inspection_service.inspect_produce(
+        _jpeg_bytes(),
+        detect=lambda _: Finding(
+            produce_type=ProduceType.UNKNOWN,
+            detected_item="car",
+            item_is_fruit=False,
+            condition=Condition.UNSURE,
+            confidence=0.9,
+        ),
+    )
+    assert result.report_available is False
+    repository = InspectionRepository(settings.inspection_db_path)
+    assert repository.get_report_pdf(result.inspection_id) is None

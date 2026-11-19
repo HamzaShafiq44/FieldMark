@@ -81,7 +81,7 @@ def test_groq_passes_configured_key_and_parses_finding() -> None:
     image_url = request_payload["messages"][1]["content"][1]["image_url"]["url"]
     assert request_payload["model"] == "vision-test"
     assert image_url.startswith("data:image/jpeg;base64,")
-    assert result.produce_type.value == "tomato"
+    assert result.produce_type == "tomato"
 
 
 def test_ollama_sends_image_and_parses_finding() -> None:
@@ -99,7 +99,7 @@ def test_ollama_sends_image_and_parses_finding() -> None:
     request_payload = json.loads(request.call_args.args[0].data)
     assert request_payload["model"] == "vision-test"
     assert request_payload["messages"][1]["images"]
-    assert result.produce_type.value == "orange"
+    assert result.produce_type == "orange"
 
 
 def test_ollama_network_failure_is_a_detection_error() -> None:
