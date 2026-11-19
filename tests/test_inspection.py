@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from app.ai.providers import DetectionError
 from app.ai.schemas import Condition, DefectType, Finding, ProduceType, Severity
 from app.core.config import settings
 from app.services.inspection_service import InvalidImageError, grade, inspect_produce
@@ -238,3 +239,77 @@ def test_out_of_category_type_from_model_is_kept_as_unknown() -> None:
     assert result.detected_item == "guava"
     assert result.grade == "A"
     assert result.in_inspection_categories is False
+
+
+class _FakeLocator:
+    """Stand-in for a provider that supports second-stage localization."""
+
+    def __init__(self, finding: Finding, bbox: tuple[float, float, float, float] | None) -> None:
+        self.finding = finding
+        self.bbox = bbox
+        self.calls = 0
+
+    def __call__(self, _image: Image.Image) -> Finding:
+        return self.finding
+
+    def locate_defect(
+        self, _image: Image.Image, _finding: Finding
+    ) -> tuple[float, float, float, float] | None:
+        self.calls += 1
+        return self.bbox
+
+
+def test_localization_supplies_the_result_bbox() -> None:
+    """Use the second-stage coordinates, not the stray box from the analysis call."""
+    finding = Finding(
+        produce_type=ProduceType.TOMATO,
+        item_is_fruit=True,
+        condition=Condition.FRESH,
+        confidence=0.9,
+        defect_types=[DefectType.BRUISE],
+        severity=Severity.LOW,
+        bbox=(0.1, 0.1, 0.2, 0.2),
+    )
+    detector = _FakeLocator(finding, (0.3, 0.4, 0.6, 0.7))
+    result = inspect_produce(_jpeg_bytes(), detect=detector)
+    assert detector.calls == 1
+    assert result.bbox == (0.3, 0.4, 0.6, 0.7)
+
+
+def test_localization_is_skipped_for_fresh_produce() -> None:
+    """Never spend a localization call when the analysis found no defect."""
+    finding = Finding(
+        produce_type=ProduceType.TOMATO,
+        item_is_fruit=True,
+        condition=Condition.FRESH,
+        confidence=0.9,
+        bbox=(0.1, 0.1, 0.2, 0.2),
+    )
+    detector = _FakeLocator(finding, (0.3, 0.4, 0.6, 0.7))
+    result = inspect_produce(_jpeg_bytes(), detect=detector)
+    assert detector.calls == 0
+    assert result.bbox is None
+
+
+def test_localization_failure_keeps_analysis_box() -> None:
+    """Keep the analysis box when the second-stage call fails."""
+
+    class _FailingLocator(_FakeLocator):
+        def locate_defect(
+            self, _image: Image.Image, _finding: Finding
+        ) -> tuple[float, float, float, float] | None:
+            self.calls += 1
+            raise DetectionError("localization unavailable")
+
+    finding = Finding(
+        produce_type=ProduceType.TOMATO,
+        item_is_fruit=True,
+        condition=Condition.ROTTEN,
+        confidence=0.9,
+        bbox=(0.1, 0.1, 0.2, 0.2),
+    )
+    detector = _FailingLocator(finding, None)
+    result = inspect_produce(_jpeg_bytes(), detect=detector)
+    assert detector.calls == 1
+    assert result.bbox == (0.1, 0.1, 0.2, 0.2)
+    assert result.grade == "Reject"

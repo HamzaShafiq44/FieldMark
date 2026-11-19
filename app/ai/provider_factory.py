@@ -1,5 +1,6 @@
 """Create a vision detector from application configuration."""
 
+from app.ai.produce_gemini import GeminiVisionDetector
 from app.ai.produce_groq import GroqVisionDetector
 from app.ai.produce_ollama import OllamaVisionDetector
 from app.ai.providers import VisionDetector
@@ -28,6 +29,18 @@ def create_vision_detector(
         return OllamaVisionDetector(
             selected_settings.ollama_base_url,
             selected_settings.ollama_vision_model,
+            supported_types=supported_types,
+        )
+    if selected_settings.vision_provider == "gemini":
+        return GeminiVisionDetector(
+            selected_settings.gemini_api_key,
+            selected_settings.gemini_vision_model,
+            localization_model=selected_settings.gemini_localization_model,
+            fallback_models=[
+                item.strip()
+                for item in selected_settings.gemini_fallback_models.split(",")
+                if item.strip()
+            ],
             supported_types=supported_types,
         )
     raise ValueError(f"Unsupported vision provider: {selected_settings.vision_provider}")

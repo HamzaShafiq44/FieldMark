@@ -1,0 +1,44 @@
+# Edible fruits users are allowed to add as inspection categories.
+# Stored as lowercase slugs so display names can be matched after slugify().
+fruits:
+  - apple
+  - apricot
+  - avocado
+  - banana
+  - blackberry
+  - blueberry
+  - cantaloupe
+  - cherry
+  - clementine
+  - coconut
+  - cranberry
+  - date
+  - dragonfruit
+  - fig
+  - gooseberry
+  - grape
+  - grapefruit
+  - guava
+  - honeydew
+  - kiwi
+  - kumquat
+  - lemon
+  - lime
+  - lychee
+  - mango
+  - melon
+  - nectarine
+  - orange
+  - papaya
+  - passionfruit
+  - peach
+  - pear
+  - persimmon
+  - pineapple
+  - plum
+  - pomegranate
+  - raspberry
+  - strawberry
+  - tangerine
+  - tomato
+  - watermelon

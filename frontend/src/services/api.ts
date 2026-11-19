@@ -121,6 +121,14 @@ export function inspectionThumbnailUrl(inspectionId: string): string {
   return apiUrl(`/inspections/history/${encodeURIComponent(inspectionId)}/thumbnail`)
 }
 
+export function inspectionOriginalUrl(inspectionId: string): string {
+  return apiUrl(`/inspections/history/${encodeURIComponent(inspectionId)}/original`)
+}
+
+export function inspectionAnnotatedUrl(inspectionId: string): string {
+  return apiUrl(`/inspections/history/${encodeURIComponent(inspectionId)}/annotated`)
+}
+
 export async function createInspectionReport(
   inspectionId: string,
   voiceNote?: File,
@@ -141,6 +149,19 @@ export async function downloadInspectionReport(inspectionId: string): Promise<Bl
   const response = await fetch(`${reportUrl(inspectionId)}?download=true`)
   if (!response.ok) throw await reportApiError(response)
   return response.blob()
+}
+
+export async function relocateDefect(inspectionId: string): Promise<InspectionResult> {
+  const response = await fetch(
+    apiUrl(`/inspections/${encodeURIComponent(inspectionId)}/relocate`),
+    {
+      method: 'POST',
+    },
+  )
+  if (!response.ok) {
+    throw await responseApiError(response, 'Could not locate the defect on this photo.')
+  }
+  return (await response.json()) as InspectionResult
 }
 
 export async function clearInspectionHistory(): Promise<void> {

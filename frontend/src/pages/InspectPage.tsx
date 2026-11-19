@@ -23,9 +23,12 @@ import {
   type Verdict,
   createInspectionReport,
   downloadInspectionReport,
+  inspectionAnnotatedUrl,
+  inspectionOriginalUrl,
   inspectionThumbnailUrl,
   inspectProduce,
   listInspectionHistory,
+  relocateDefect,
   type ApiStatus,
   type InspectionHistoryItem,
   type InspectionResult,
@@ -211,6 +214,8 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const [voiceNoteFile, setVoiceNoteFile] = useState<File | null>(null)
   const [reportActionId, setReportActionId] = useState<string | null>(null)
   const [reportError, setReportError] = useState<string | null>(null)
+  const [relocationId, setRelocationId] = useState<string | null>(null)
+  const [relocationError, setRelocationError] = useState<string | null>(null)
   const [categories, setCategories] = useState<ProductCategory[]>(FALLBACK_CATEGORIES)
   const resultClassification = result ? classifyInspectionResult(result) : null
   const isUnsupportedItem = resultClassification === 'unsupported_item'
@@ -380,6 +385,27 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
       setReportError(caught instanceof Error ? caught.message : 'PDF report could not be updated.')
     } finally {
       setReportActionId(null)
+    }
+  }
+
+  const handleRelocateDefect = async (inspectionId: string) => {
+    if (relocationId) return
+    setRelocationId(inspectionId)
+    setRelocationError(null)
+    try {
+      const updated = await relocateDefect(inspectionId)
+      setResult((current) =>
+        current && current.inspection_id === inspectionId
+          ? { ...updated, report_available: current.report_available }
+          : current,
+      )
+      void refreshHistory()
+    } catch (caught: unknown) {
+      setRelocationError(
+        caught instanceof Error ? caught.message : 'Could not locate the defect area.',
+      )
+    } finally {
+      setRelocationId(null)
     }
   }
 
@@ -680,6 +706,55 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                   Unsupported item
                 </p>
               )}
+
+              <section className="photo-evidence" aria-label="Photo evidence">
+                <div className="photo-evidence-heading">
+                  <span className="result-label">PHOTO EVIDENCE</span>
+                  {result.bbox && <span>Reported defect area marked</span>}
+                </div>
+                <div className={`photo-evidence-grid ${result.bbox ? 'has-annotated' : ''}`}>
+                  <figure className="photo-figure">
+                    <img
+                      src={previewUrl ?? inspectionOriginalUrl(result.inspection_id)}
+                      alt="Original uploaded product photo"
+                    />
+                    <figcaption>Original photo</figcaption>
+                  </figure>
+                  {result.bbox && (
+                    <figure className="photo-figure">
+                      <img
+                        src={inspectionAnnotatedUrl(result.inspection_id)}
+                        alt="Product photo with the reported defect area marked"
+                      />
+                      <figcaption>Reported defect area</figcaption>
+                    </figure>
+                  )}
+                </div>
+                {!result.bbox &&
+                  !isUnsupportedItem &&
+                  (result.defect_types.length > 0 || result.grade === 'Reject') && (
+                    <div className="relocate-action">
+                      <button
+                        className="history-report-button"
+                        type="button"
+                        onClick={() => void handleRelocateDefect(result.inspection_id)}
+                        disabled={relocationId !== null}
+                      >
+                        {relocationId === result.inspection_id ? (
+                          <LoaderCircle className="spin" size={14} />
+                        ) : (
+                          <ScanLine size={14} />
+                        )}
+                        Find defect area
+                      </button>
+                      {relocationError && (
+                        <p className="report-error" role="alert">
+                          {relocationError}
+                        </p>
+                      )}
+                    </div>
+                  )}
+              </section>
 
               {!isUnsupportedItem && (
                 <>

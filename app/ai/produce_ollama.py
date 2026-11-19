@@ -9,9 +9,15 @@ from PIL import Image
 from pydantic import BaseModel, ValidationError
 
 from app.ai.image_encoding import encode_image_base64
-from app.ai.prompts import DEFAULT_SUPPORTED_TYPES, INSPECTION_TEXT, get_system_prompt
-from app.ai.providers import DetectionError
-from app.ai.schemas import Finding
+from app.ai.prompts import (
+    DEFAULT_SUPPORTED_TYPES,
+    INSPECTION_TEXT,
+    LOCALIZATION_TEXT,
+    get_localization_prompt,
+    get_system_prompt,
+)
+from app.ai.providers import DetectionError, defect_summary
+from app.ai.schemas import BBox, DefectLocalization, Finding
 
 LOGGER = logging.getLogger(__name__)
 OLLAMA_TIMEOUT_SECONDS = 120
@@ -53,7 +59,24 @@ class OllamaVisionDetector:
             LOGGER.error("Local vision detection failed (%s).", type(exc).__name__)
             raise DetectionError("Local vision detection failed.") from exc
 
-    def _request(self, image: Image.Image) -> bytes:
+    def locate_defect(self, image: Image.Image, finding: Finding) -> BBox | None:
+        """Locate the reported defect in a dedicated second vision call."""
+        prompt = get_localization_prompt(defect_summary(finding), finding.visual_observation)
+        try:
+            response = _OllamaResponse.model_validate_json(
+                self._request(image, prompt, LOCALIZATION_TEXT)
+            )
+            return DefectLocalization.model_validate_json(response.message.content).bbox
+        except (OSError, TimeoutError, URLError, ValidationError) as exc:
+            LOGGER.error("Local defect localization failed (%s).", type(exc).__name__)
+            raise DetectionError("Defect localization failed.") from exc
+
+    def _request(
+        self,
+        image: Image.Image,
+        system_prompt: str | None = None,
+        user_text: str = INSPECTION_TEXT,
+    ) -> bytes:
         """Send an image to Ollama and return the response body."""
         payload = {
             "model": self.model,
@@ -61,10 +84,13 @@ class OllamaVisionDetector:
             "format": "json",
             "options": {"temperature": 0},
             "messages": [
-                {"role": "system", "content": get_system_prompt(self.supported_types)},
+                {
+                    "role": "system",
+                    "content": system_prompt or get_system_prompt(self.supported_types),
+                },
                 {
                     "role": "user",
-                    "content": INSPECTION_TEXT,
+                    "content": user_text,
                     "images": [encode_image_base64(image)],
                 },
             ],

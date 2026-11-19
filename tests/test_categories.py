@@ -66,6 +66,14 @@ def test_duplicate_and_reserved_names_are_rejected() -> None:
     assert client.post("/api/categories", json={"name": "A"}).status_code == 422
 
 
+def test_allowed_fruits_are_loaded_from_yaml() -> None:
+    """Load the fruit allowlist from the packaged YAML file."""
+    from app.services.category_service import ALLOWED_FRUITS
+
+    assert ALLOWED_FRUITS
+    assert {"apple", "banana", "orange", "tomato", "guava", "grape"} <= ALLOWED_FRUITS
+
+
 def test_only_edible_fruit_can_be_added() -> None:
     """Reject non-fruit category names when creating a category."""
     for non_fruit in ("Car", "Chair", "Laptop", "Bicycle", "Toaster"):

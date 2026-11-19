@@ -474,8 +474,8 @@ def _photo_table(
     original_image: bytes,
     result: InspectionResult,
 ) -> Table:
-    """Include an annotated preview only when a reported defect has a bounding box."""
-    if not result.defect_types or result.bbox is None:
+    """Include an annotated preview whenever a defect bounding box is present."""
+    if result.bbox is None:
         rows = [
             [_pdf_image(original_image, CONTENT_WIDTH)],
             [_paragraph("ORIGINAL PHOTO", styles["panel_label"])],

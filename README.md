@@ -13,6 +13,7 @@ flowchart LR
     Route --> Service["Inspection service"]
     Service --> Factory["Configured vision provider"]
     Factory --> Groq["Groq API"]
+    Factory --> Gemini["Optional Gemini API"]
     Factory --> Ollama["Optional local Ollama"]
     Service --> SQLite["SQLite inspection history"]
     SQLite --> History["History list and thumbnails"]
@@ -20,9 +21,10 @@ flowchart LR
 
 The API route handles HTTP input and responses, the service validates images and applies grading
 rules, and the provider factory selects a vision implementation from configuration. Inspection
-metadata is saved to SQLite at `data/inspections.sqlite3` by default. Original photos and
-thumbnails are stored under `data/images/`, and generated PDFs under `data/reports/`; SQLite keeps
-only their file paths. Clearing inspection history deletes the saved images and reports. See
+metadata is saved to SQLite at `data/inspections.sqlite3` by default. Original photos, thumbnails,
+and annotated defect images are stored under `data/images/`; SQLite keeps only their file paths.
+Report narratives are stored in SQLite and the PDF is rebuilt on demand at download time, so no
+PDF files are written to disk. Clearing inspection history deletes the saved images and reports. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for the component map, data model, API surface, failure
 modes, and deployment details.
 
@@ -75,14 +77,12 @@ Useful commands:
 docker compose logs -f app     # follow application logs
 docker compose restart app     # restart; inspection history is preserved
 docker compose down            # stop the container; inspection history is preserved
-docker compose down -v         # stop and delete the saved inspection history
 ```
 
-Inspection history lives in the `inspection-data` Docker volume mounted at `/app/data`, so it
-survives container restarts and rebuilds. That volume is separate from the host `./data/` folder:
-when running with Docker, inspect the database with
-`docker compose exec app python -c "import sqlite3; ..."` or change the volume mapping to a host
-bind mount. Secrets come from the runtime `.env` file and are never baked into the image.
+Inspection history lives in the host `./data/` folder, bind-mounted at `/app/data`, so it survives
+container restarts and rebuilds and can be opened directly with any SQLite viewer. Deleting
+`./data/` removes the saved inspections, images, and reports. Secrets come from the runtime `.env`
+file and are never baked into the image.
 
 ## Result behavior
 
@@ -91,11 +91,11 @@ in `item_is_fruit`. Edible products are graded with the same rules even when the
 active inspection categories; those results also state that the product is outside the categories.
 Anything that is not an edible product is shown as an "Unsupported item" with no grade or verdict.
 
-Every edible product gets a one-page PDF report generated automatically during the inspection. If
-the AI-written narrative fails, the same layout is rebuilt with deterministic text; if rendering
-also fails, no report path is stored and the interface shows that the report is unavailable.
-Non-edible items do not get a PDF. An optional voice note updates the stored report with spoken
-context.
+Every edible product gets a report narrative generated automatically during the inspection. If the
+AI-written narrative fails, deterministic text is used instead; if both fail, no report is stored
+and the interface shows that the report is unavailable. The one-page PDF is rebuilt from that
+stored narrative whenever you download it — no PDF is written to disk. Non-edible items do not get
+a report. An optional voice note updates the stored narrative with spoken context.
 
 ## Inspection categories
 
@@ -118,10 +118,22 @@ direct refresh or shared link.
 Groq is the default (`VISION_PROVIDER=groq`); set `GROQ_API_KEY` and optionally
 `GROQ_VISION_MODEL`.
 
+**Gemini** is available on Google's free tier: set `VISION_PROVIDER=gemini`, add `GEMINI_API_KEY`,
+and optionally override `GEMINI_VISION_MODEL` and `GEMINI_LOCALIZATION_MODEL`. It uses structured
+JSON response schemas for both the analysis and defect-localization calls. Defaults are
+`gemini-4-hydrogen` for analysis and `gemini-3.5-flash-lite` for the second-stage box. If the
+selected model is overloaded or rate-limited (HTTP 429/5xx), the detector automatically retries
+the next model in `GEMINI_FALLBACK_MODELS` (default: `gemini-3.8-flash`, `gemini-3.6-flash`,
+`gemini-3.5-flash-lite`). Free-tier prompts may be used by Google to improve its products, and rate
+limits vary, so check your limits in Google AI Studio.
+
 Ollama is an optional local provider, not required to run the default setup. Install Ollama and
 pull a vision model such as `qwen2.5vl:7b`, then set `VISION_PROVIDER=ollama`. Configure its
 endpoint and model with `OLLAMA_BASE_URL` and `OLLAMA_VISION_MODEL`. The application does not
 silently switch providers if the selected provider fails.
+
+Note: report writing and voice transcription still use Groq, so a `GROQ_API_KEY` is also required
+for those features regardless of the vision provider.
 
 ## Inspection history
 

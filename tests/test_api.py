@@ -11,7 +11,15 @@ from PIL import Image
 from pydantic import ValidationError
 
 from app.ai.providers import DetectionError
-from app.ai.schemas import Condition, Finding, InspectionResult, ProduceType, ReportUserType
+from app.ai.schemas import (
+    Condition,
+    DefectType,
+    Finding,
+    InspectionResult,
+    ProduceType,
+    ReportUserType,
+    Severity,
+)
 from app.api import routes_inspection
 from app.core.config import settings
 from app.main import app
@@ -135,20 +143,139 @@ def test_clear_history_deletes_inspections_and_reports(
         ReportUserType.FARMER,
         "",
         "{}",
-        b"%PDF-test",
     )
 
     response = client.delete("/inspections/history")
 
     assert response.status_code == 204
     assert client.get("/inspections/history").json() == {"items": []}
-    assert repository.get_report_pdf(inspection_id) is None
+    assert repository.get_report_data(inspection_id) is None
     assert repository.get_thumbnail(inspection_id) is None
 
 
 def test_unknown_history_thumbnail_returns_404() -> None:
     """Return not found when a history thumbnail does not exist."""
     response = client.get("/inspections/history/00000000-0000-0000-0000-000000000000/thumbnail")
+    assert response.status_code == 404
+
+
+def test_original_and_annotated_photo_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serve the original photo for any inspection and an annotated one only for defects."""
+    clean = Finding(produce_type=ProduceType.APPLE, condition=Condition.FRESH, confidence=0.9)
+    _patch_detector(monkeypatch, lambda _: clean)
+    clean_id = client.post(
+        "/inspections/product", files={"image": ("apple.jpg", _jpeg_bytes())}
+    ).json()["inspection_id"]
+
+    original = client.get(f"/inspections/history/{clean_id}/original")
+    assert original.status_code == 200
+    assert original.headers["content-type"] == "image/jpeg"
+    assert original.content.startswith(b"\xff\xd8")
+    assert client.get(f"/inspections/history/{clean_id}/annotated").status_code == 404
+
+    defective = Finding(
+        produce_type=ProduceType.APPLE,
+        item_is_fruit=True,
+        condition=Condition.FRESH,
+        confidence=0.9,
+        defect_types=[DefectType.BRUISE],
+        severity=Severity.LOW,
+        bbox=(0.2, 0.2, 0.8, 0.8),
+    )
+
+    class _Locator:
+        def __call__(self, _image: object) -> Finding:
+            return defective
+
+        def locate_defect(
+            self, _image: object, _finding: Finding
+        ) -> tuple[float, float, float, float]:
+            return (0.2, 0.2, 0.8, 0.8)
+
+    _patch_detector(monkeypatch, _Locator())
+    defect_id = client.post(
+        "/inspections/product", files={"image": ("apple.jpg", _jpeg_bytes())}
+    ).json()["inspection_id"]
+
+    annotated_path = settings.inspection_db_path.parent / "images" / f"{defect_id}_annotated.jpg"
+    assert annotated_path.is_file()
+    assert annotated_path.read_bytes().startswith(b"\xff\xd8")
+
+    annotated = client.get(f"/inspections/history/{defect_id}/annotated")
+    assert annotated.status_code == 200
+    assert annotated.headers["content-type"] == "image/jpeg"
+    assert annotated.content.startswith(b"\xff\xd8")
+    assert (
+        client.get(
+            "/inspections/history/00000000-0000-0000-0000-000000000000/annotated"
+        ).status_code
+        == 404
+    )
+
+
+class _RelocatingDetector:
+    """Stand-in for a provider used only for second-stage localization."""
+
+    def __init__(self, bbox: tuple[float, float, float, float] | None) -> None:
+        self.bbox = bbox
+
+    def __call__(self, _image: object) -> Finding:
+        raise AssertionError("analysis should not run during relocation")
+
+    def locate_defect(
+        self, _image: object, _finding: Finding
+    ) -> tuple[float, float, float, float] | None:
+        return self.bbox
+
+
+def test_relocate_defect_saves_box_and_annotated_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repair an inspection that was saved without coordinates."""
+    finding = Finding(
+        produce_type=ProduceType.APPLE,
+        item_is_fruit=True,
+        condition=Condition.FRESH,
+        confidence=0.9,
+        defect_types=[DefectType.BRUISE],
+        severity=Severity.LOW,
+    )
+    _patch_detector(monkeypatch, lambda _: finding)
+    inspection_id = client.post(
+        "/inspections/product", files={"image": ("apple.jpg", _jpeg_bytes())}
+    ).json()["inspection_id"]
+    assert client.get(f"/inspections/history/{inspection_id}/annotated").status_code == 404
+
+    monkeypatch.setattr(
+        inspection_service,
+        "create_vision_detector",
+        lambda **_: _RelocatingDetector((0.2, 0.3, 0.6, 0.7)),
+    )
+    response = client.post(f"/inspections/{inspection_id}/relocate")
+    assert response.status_code == 200
+    assert tuple(response.json()["bbox"]) == (0.2, 0.3, 0.6, 0.7)
+    annotated = client.get(f"/inspections/history/{inspection_id}/annotated")
+    assert annotated.status_code == 200
+    assert annotated.content.startswith(b"\xff\xd8")
+
+
+def test_relocate_defect_rejects_clean_inspection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refuse to localize a defect on a fresh product."""
+    finding = Finding(produce_type=ProduceType.APPLE, condition=Condition.FRESH, confidence=0.9)
+    _patch_detector(monkeypatch, lambda _: finding)
+    inspection_id = client.post(
+        "/inspections/product", files={"image": ("apple.jpg", _jpeg_bytes())}
+    ).json()["inspection_id"]
+    response = client.post(f"/inspections/{inspection_id}/relocate")
+    assert response.status_code == 409
+
+
+def test_relocate_unknown_inspection_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Return not found when there is no inspection to relocate."""
+    monkeypatch.setattr(
+        inspection_service,
+        "create_vision_detector",
+        lambda **_: _RelocatingDetector((0.2, 0.3, 0.6, 0.7)),
+    )
+    response = client.post("/inspections/00000000-0000-0000-0000-000000000000/relocate")
     assert response.status_code == 404
 
 
@@ -225,6 +352,36 @@ def test_finding_bbox_and_defect_validation() -> None:
                 "defect_types": ["unknown"],
             }
         )
+
+
+def test_bbox_is_kept_only_for_defective_edible_products() -> None:
+    """Clear stray boxes on fresh produce or non-fruit, but keep real defect boxes."""
+    base = {
+        "produce_type": "tomato",
+        "condition": "fresh",
+        "confidence": 0.8,
+        "bbox": [0.2, 0.2, 0.8, 0.8],
+        "item_is_fruit": True,
+    }
+    # Fresh product with no defect -> no box.
+    assert Finding.model_validate(base).bbox is None
+    # A reported defect keeps its box even with "none" severity (Grade B case).
+    no_severity = {**base, "defect_types": ["bruise"], "severity": "none"}
+    assert Finding.model_validate(no_severity).bbox == (0.2, 0.2, 0.8, 0.8)
+    # A non-fruit item with a hallucinated defect -> no box.
+    non_fruit = {
+        **base,
+        "item_is_fruit": False,
+        "defect_types": ["bruise"],
+        "severity": "low",
+    }
+    assert Finding.model_validate(non_fruit).bbox is None
+    # A rotten product without a labeled defect keeps its box (Reject case).
+    rotten = {**base, "condition": "rotten", "confidence": 0.9}
+    assert Finding.model_validate(rotten).bbox == (0.2, 0.2, 0.8, 0.8)
+    # A normal localized defect keeps its box, including needs-review cases.
+    real_defect = {**base, "defect_types": ["bruise"], "severity": "low"}
+    assert Finding.model_validate(real_defect).bbox == (0.2, 0.2, 0.8, 0.8)
 
 
 def test_finding_limits_visual_observation_length() -> None:

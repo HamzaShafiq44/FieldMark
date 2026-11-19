@@ -1,6 +1,9 @@
 """Validation and orchestration for product categories."""
 
 import re
+from pathlib import Path
+
+import yaml
 
 from app.core.config import settings
 from app.storage.category_repository import (
@@ -18,52 +21,25 @@ MAX_ACTIVE_CATEGORIES = 20
 RESERVED_SLUGS = frozenset({"unknown"})
 SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 
+FRUITS_FILE = Path(__file__).with_name("fruits.yaml")
+
+
+def _load_allowed_fruits() -> frozenset[str]:
+    """Load the allowed fruit slugs from the packaged YAML file."""
+    with FRUITS_FILE.open(encoding="utf-8") as stream:
+        data = yaml.safe_load(stream)
+    fruits = data.get("fruits") if isinstance(data, dict) else None
+    if (
+        not isinstance(fruits, list)
+        or not fruits
+        or not all(isinstance(item, str) and item for item in fruits)
+    ):
+        raise RuntimeError("fruits.yaml must define a non-empty 'fruits' list of strings.")
+    return frozenset(fruits)
+
+
 # Edible fruits users are allowed to add as inspection categories.
-ALLOWED_FRUITS = frozenset(
-    {
-        "apple",
-        "apricot",
-        "avocado",
-        "banana",
-        "blackberry",
-        "blueberry",
-        "cantaloupe",
-        "cherry",
-        "clementine",
-        "coconut",
-        "cranberry",
-        "date",
-        "dragonfruit",
-        "fig",
-        "gooseberry",
-        "grape",
-        "grapefruit",
-        "guava",
-        "honeydew",
-        "kiwi",
-        "kumquat",
-        "lemon",
-        "lime",
-        "lychee",
-        "mango",
-        "melon",
-        "nectarine",
-        "orange",
-        "papaya",
-        "passionfruit",
-        "peach",
-        "pear",
-        "persimmon",
-        "pineapple",
-        "plum",
-        "pomegranate",
-        "raspberry",
-        "strawberry",
-        "tangerine",
-        "tomato",
-        "watermelon",
-    }
-)
+ALLOWED_FRUITS = _load_allowed_fruits()
 
 
 class CategoryError(RuntimeError):

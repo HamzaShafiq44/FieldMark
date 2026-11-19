@@ -62,7 +62,6 @@ SELECT inspection_id, created_at, produce_type, verdict, grade, result_json,
        EXISTS(
            SELECT 1 FROM inspection_reports
            WHERE inspection_reports.inspection_id = inspections.inspection_id
-             AND inspection_reports.pdf_path IS NOT NULL
        ) AS report_available,
        original_image_path IS NOT NULL AND result_json IS NOT NULL AS report_source_available
 FROM inspections
@@ -70,6 +69,8 @@ ORDER BY created_at DESC, inspection_id DESC
 LIMIT ? OFFSET ?
 """
 SELECT_THUMBNAIL_PATH = "SELECT thumbnail_path FROM inspections WHERE inspection_id = ?"
+SELECT_ORIGINAL_PATH = "SELECT original_image_path FROM inspections WHERE inspection_id = ?"
+UPDATE_RESULT_JSON = "UPDATE inspections SET result_json = ? WHERE inspection_id = ?"
 SELECT_REPORT_SOURCE = """
 SELECT created_at, original_image_path, result_json
 FROM inspections
@@ -82,23 +83,39 @@ CREATE TABLE IF NOT EXISTS inspection_reports (
     created_at TEXT NOT NULL,
     user_type TEXT NOT NULL,
     transcript TEXT NOT NULL,
-    report_text_json TEXT NOT NULL,
-    pdf_path TEXT
+    report_text_json TEXT NOT NULL
+)
+"""
+CREATE_REPORTS_TABLE_REBUILD = """
+CREATE TABLE inspection_reports_new (
+    inspection_id TEXT PRIMARY KEY,
+    report_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    user_type TEXT NOT NULL,
+    transcript TEXT NOT NULL,
+    report_text_json TEXT NOT NULL
 )
 """
 INSERT_REPORT = """
 INSERT INTO inspection_reports (
-    inspection_id, report_id, created_at, user_type, transcript, report_text_json, pdf_path
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+    inspection_id, report_id, created_at, user_type, transcript, report_text_json
+) VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(inspection_id) DO UPDATE SET
     report_id = excluded.report_id,
     created_at = excluded.created_at,
     user_type = excluded.user_type,
     transcript = excluded.transcript,
-    report_text_json = excluded.report_text_json,
-    pdf_path = excluded.pdf_path
+    report_text_json = excluded.report_text_json
 """
-SELECT_REPORT_PDF = "SELECT pdf_path FROM inspection_reports WHERE inspection_id = ?"
+INSERT_REPORT_REBUILD = """
+INSERT INTO inspection_reports_new (
+    inspection_id, report_id, created_at, user_type, transcript, report_text_json
+) VALUES (?, ?, ?, ?, ?, ?)
+"""
+SELECT_REPORT_DATA = """
+SELECT report_id, created_at, user_type, transcript, report_text_json
+FROM inspection_reports WHERE inspection_id = ?
+"""
 DELETE_REPORTS = "DELETE FROM inspection_reports"
 DELETE_INSPECTIONS = "DELETE FROM inspections"
 
@@ -114,6 +131,17 @@ class InspectionReportSource:
     created_at: str
     original_image: bytes
     result: InspectionResult
+
+
+@dataclass(frozen=True)
+class InspectionReportData:
+    """Persisted narrative used to rebuild a report PDF on demand."""
+
+    report_id: str
+    created_at: str
+    user_type: str
+    transcript: str
+    report_text_json: str
 
 
 class InspectionRepository:
@@ -177,6 +205,48 @@ class InspectionRepository:
             LOGGER.error("Inspection thumbnail read failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection thumbnail could not be loaded.") from exc
 
+    def get_original(self, inspection_id: str) -> bytes | None:
+        """Return the stored original photo, or None when it is unavailable."""
+        try:
+            with self._connection() as connection:
+                row = connection.execute(SELECT_ORIGINAL_PATH, (inspection_id,)).fetchone()
+            if row is None:
+                return None
+            path = _resolve_path(self.database_path.parent, row["original_image_path"])
+            return path.read_bytes() if path is not None and path.is_file() else None
+        except (OSError, sqlite3.Error) as exc:
+            LOGGER.error("Inspection photo read failed (%s).", type(exc).__name__)
+            raise HistoryStorageError("Inspection photo could not be loaded.") from exc
+
+    def save_annotated(self, inspection_id: str, photo: bytes) -> None:
+        """Persist an annotated preview alongside the original photo."""
+        path = self.database_path.parent / IMAGES_DIRNAME / f"{inspection_id}_annotated.jpg"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(photo)
+        except OSError as exc:
+            LOGGER.error("Annotated photo write failed (%s).", type(exc).__name__)
+            raise HistoryStorageError("Annotated photo could not be saved.") from exc
+
+    def get_annotated(self, inspection_id: str) -> bytes | None:
+        """Return a stored annotated photo, or None when it is unavailable."""
+        path = self.database_path.parent / IMAGES_DIRNAME / f"{inspection_id}_annotated.jpg"
+        try:
+            return path.read_bytes() if path.is_file() else None
+        except OSError as exc:
+            LOGGER.error("Annotated photo read failed (%s).", type(exc).__name__)
+            raise HistoryStorageError("Annotated photo could not be loaded.") from exc
+
+    def update_result(self, inspection_id: str, result_json: str) -> bool:
+        """Replace the stored inspection result payload."""
+        try:
+            with self._connection() as connection:
+                cursor = connection.execute(UPDATE_RESULT_JSON, (result_json, inspection_id))
+            return cursor.rowcount > 0
+        except (OSError, sqlite3.Error) as exc:
+            LOGGER.error("Inspection result update failed (%s).", type(exc).__name__)
+            raise HistoryStorageError("Inspection result could not be updated.") from exc
+
     def get_report_source(self, inspection_id: str) -> InspectionReportSource | None:
         """Return persisted inspection inputs, or None when unavailable."""
         try:
@@ -203,15 +273,9 @@ class InspectionRepository:
         user_type: ReportUserType,
         transcript: str,
         report_text_json: str,
-        pdf: bytes,
     ) -> None:
-        """Persist a generated PDF on disk and store its path in SQLite."""
+        """Persist only the report narrative; PDFs are rebuilt on demand."""
         try:
-            reports_dir = self.database_path.parent / REPORTS_DIRNAME
-            reports_dir.mkdir(parents=True, exist_ok=True)
-            pdf_path = reports_dir / f"{inspection_id}_report.pdf"
-            pdf_path.write_bytes(pdf)
-
             created_at = datetime.now(UTC).isoformat()
             with self._connection() as connection:
                 connection.execute(
@@ -223,22 +287,26 @@ class InspectionRepository:
                         user_type.value,
                         transcript,
                         report_text_json,
-                        _stored_path(self.database_path.parent, pdf_path),
                     ),
                 )
         except (OSError, sqlite3.Error) as exc:
             LOGGER.error("Inspection report write failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection report could not be saved.") from exc
 
-    def get_report_pdf(self, inspection_id: str) -> bytes | None:
-        """Return a previously generated inspection report."""
+    def get_report_data(self, inspection_id: str) -> InspectionReportData | None:
+        """Return the stored narrative used to rebuild a report PDF."""
         try:
             with self._connection() as connection:
-                row = connection.execute(SELECT_REPORT_PDF, (inspection_id,)).fetchone()
+                row = connection.execute(SELECT_REPORT_DATA, (inspection_id,)).fetchone()
             if row is None:
                 return None
-            pdf_path = _resolve_path(self.database_path.parent, row["pdf_path"])
-            return pdf_path.read_bytes() if pdf_path is not None and pdf_path.is_file() else None
+            return InspectionReportData(
+                report_id=str(row["report_id"]),
+                created_at=str(row["created_at"]),
+                user_type=str(row["user_type"]),
+                transcript=str(row["transcript"]),
+                report_text_json=str(row["report_text_json"]),
+            )
         except (OSError, sqlite3.Error) as exc:
             LOGGER.error("Inspection report read failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection report could not be loaded.") from exc
@@ -267,7 +335,8 @@ class InspectionRepository:
                 connection.execute(CREATE_HISTORY_TABLE)
                 migrated = _migrate_history_schema(connection, self.database_path.parent)
                 connection.execute(CREATE_REPORTS_TABLE)
-            if migrated:
+                reports_migrated = _migrate_reports_schema(connection)
+            if migrated or reports_migrated:
                 try:
                     connection.execute("VACUUM")
                 except sqlite3.Error as exc:
@@ -356,6 +425,36 @@ def _migrate_history_schema(connection: sqlite3.Connection, database_dir: Path) 
 
     connection.execute("DROP TABLE inspections")
     connection.execute("ALTER TABLE inspections_new RENAME TO inspections")
+    return True
+
+
+def _migrate_reports_schema(connection: sqlite3.Connection) -> bool:
+    """Drop the legacy pdf_path column from the reports table."""
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(inspection_reports)")}
+    if "pdf_path" not in columns:
+        return False
+
+    LOGGER.info("Migrating inspection reports to drop stored PDF paths.")
+    rows = connection.execute(
+        "SELECT inspection_id, report_id, created_at, user_type, transcript, report_text_json "
+        "FROM inspection_reports"
+    ).fetchall()
+    connection.execute("DROP TABLE IF EXISTS inspection_reports_new")
+    connection.execute(CREATE_REPORTS_TABLE_REBUILD)
+    for row in rows:
+        connection.execute(
+            INSERT_REPORT_REBUILD,
+            (
+                row["inspection_id"],
+                row["report_id"],
+                row["created_at"],
+                row["user_type"],
+                row["transcript"],
+                row["report_text_json"],
+            ),
+        )
+    connection.execute("DROP TABLE inspection_reports")
+    connection.execute("ALTER TABLE inspection_reports_new RENAME TO inspection_reports")
     return True
 
 

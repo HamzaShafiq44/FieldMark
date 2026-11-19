@@ -11,6 +11,9 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_GROQ_VISION_MODEL = "qwen/qwen3.8-27b"
 DEFAULT_GROQ_REPORT_MODEL = "openai/gpt-oss-20b"
 DEFAULT_GROQ_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
+DEFAULT_GEMINI_VISION_MODEL = "gemini-4-hydrogen"
+DEFAULT_GEMINI_LOCALIZATION_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_GEMINI_FALLBACK_MODELS = "gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite"
 DEFAULT_OLLAMA_VISION_MODEL = "qwen2.5vl:7b"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_URL_SCHEMES = frozenset({"http", "https"})
@@ -26,11 +29,15 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", extra="ignore")
 
-    vision_provider: Literal["groq", "ollama"] = "groq"
+    vision_provider: Literal["groq", "ollama", "gemini"] = "groq"
     groq_api_key: SecretStr = SecretStr("")
     groq_vision_model: str = DEFAULT_GROQ_VISION_MODEL
     groq_report_model: str = DEFAULT_GROQ_REPORT_MODEL
     groq_transcription_model: str = DEFAULT_GROQ_TRANSCRIPTION_MODEL
+    gemini_api_key: SecretStr = SecretStr("")
+    gemini_vision_model: str = DEFAULT_GEMINI_VISION_MODEL
+    gemini_localization_model: str = DEFAULT_GEMINI_LOCALIZATION_MODEL
+    gemini_fallback_models: str = DEFAULT_GEMINI_FALLBACK_MODELS
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
     ollama_vision_model: str = DEFAULT_OLLAMA_VISION_MODEL
     inspection_db_path: Path = DEFAULT_INSPECTION_DB_PATH

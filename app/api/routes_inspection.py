@@ -11,13 +11,21 @@ from starlette.concurrency import run_in_threadpool
 from app.ai.schemas import InspectionHistoryResponse, InspectionResult, ReportUserType
 from app.core.config import settings
 from app.services.inspection_service import (
+    DefectRelocationError,
     InspectionDetectionError,
     InspectionStorageError,
     InvalidImageError,
+    RelocationNotApplicableError,
+    RelocationNotFoundError,
+    RelocationStorageError,
+    RelocationVisionError,
     clear_inspection_history,
+    get_inspection_annotated,
+    get_inspection_original,
     get_inspection_thumbnail,
     inspect_produce,
     list_inspection_history,
+    relocate_defect,
 )
 from app.services.report_service import (
     InspectionReportAIError,
@@ -33,6 +41,8 @@ PAYLOAD_TOO_LARGE = "Image exceeds the maximum allowed size."
 DEFAULT_HISTORY_PAGE_SIZE = 20
 MAX_HISTORY_PAGE_SIZE = 100
 THUMBNAIL_NOT_FOUND = "Inspection thumbnail not found."
+ORIGINAL_NOT_FOUND = "Inspection photo not found."
+ANNOTATED_NOT_FOUND = "No annotated photo is available for this inspection."
 REPORT_NOT_FOUND = "Inspection report not found."
 VOICE_NOTE_TOO_LARGE = "Voice note exceeds the maximum allowed size."
 INVALID_VOICE_NOTE = "Choose a supported audio file for the optional voice note."
@@ -120,6 +130,53 @@ async def inspection_thumbnail_route(inspection_id: UUID) -> Response:
             detail=THUMBNAIL_NOT_FOUND,
         )
     return Response(content=thumbnail, media_type="image/jpeg")
+
+
+@router.get("/history/{inspection_id}/original")
+async def inspection_original_route(inspection_id: UUID) -> Response:
+    """Return the original photo of a past inspection."""
+    try:
+        photo = await run_in_threadpool(get_inspection_original, str(inspection_id))
+    except InspectionStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Inspection photo could not be loaded.",
+        ) from exc
+    if photo is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ORIGINAL_NOT_FOUND)
+    return Response(content=photo, media_type="image/jpeg")
+
+
+@router.get("/history/{inspection_id}/annotated")
+async def inspection_annotated_route(inspection_id: UUID) -> Response:
+    """Return the original photo with the model-reported defect area marked."""
+    try:
+        photo = await run_in_threadpool(get_inspection_annotated, str(inspection_id))
+    except InspectionStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Annotated photo could not be loaded.",
+        ) from exc
+    if photo is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ANNOTATED_NOT_FOUND)
+    return Response(content=photo, media_type="image/jpeg")
+
+
+@router.post("/{inspection_id}/relocate", response_model=InspectionResult)
+async def relocate_defect_route(inspection_id: UUID) -> InspectionResult:
+    """Locate and save the defect box for an inspection that has none."""
+    try:
+        return await run_in_threadpool(relocate_defect, str(inspection_id))
+    except RelocationNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except RelocationNotApplicableError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except RelocationVisionError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except (RelocationStorageError, DefectRelocationError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
 
 
 @router.post("/{inspection_id}/report")

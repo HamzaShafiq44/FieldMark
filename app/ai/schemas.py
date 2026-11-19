@@ -95,7 +95,31 @@ class Finding(BaseModel):
 
     @model_validator(mode="after")
     def clear_invalid_bbox(self) -> "Finding":
-        """Discard bounding boxes that are not normalized and ordered."""
+        """Discard boxes that are malformed or not tied to a real defect."""
+        if self.bbox is None:
+            return self
+        x1, y1, x2, y2 = self.bbox
+        if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1):
+            self.bbox = None
+            return self
+        # Keep a box only on edible products that the model reported as either
+        # spoiling by condition or carrying a localized defect. Reject grades
+        # can come from a rotten condition without a labeled defect type, and
+        # Grade B defects can carry "none" severity. Non-fruit items, and fresh
+        # or unclear products with no defect, stay unboxed.
+        if not self.item_is_fruit or (self.condition != Condition.ROTTEN and not self.defect_types):
+            self.bbox = None
+        return self
+
+
+class DefectLocalization(BaseModel):
+    """Coordinates returned by the dedicated second-stage localization call."""
+
+    bbox: BBox | None = None
+
+    @model_validator(mode="after")
+    def clear_invalid_bbox(self) -> "DefectLocalization":
+        """Discard coordinate sets that are not normalized and ordered."""
         if self.bbox is None:
             return self
         x1, y1, x2, y2 = self.bbox

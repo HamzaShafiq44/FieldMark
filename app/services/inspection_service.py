@@ -2,6 +2,7 @@
 
 import logging
 from io import BytesIO
+from typing import cast
 from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
@@ -10,6 +11,7 @@ from app.ai.prompts import DEFAULT_SUPPORTED_TYPES
 from app.ai.provider_factory import create_vision_detector
 from app.ai.providers import DetectionError, VisionDetector
 from app.ai.schemas import (
+    BBox,
     Condition,
     DefectType,
     Finding,
@@ -21,6 +23,7 @@ from app.ai.schemas import (
     Verdict,
 )
 from app.core.config import settings
+from app.reports.pdf_renderer import annotate_photo
 from app.services.category_service import CategoryError, list_active_category_slugs
 from app.services.report_service import generate_automatic_report
 from app.storage.inspection_repository import HistoryStorageError, InspectionRepository
@@ -48,6 +51,26 @@ class InspectionDetectionError(RuntimeError):
 
 class InspectionStorageError(RuntimeError):
     """Raised when inspection history cannot be persisted or retrieved."""
+
+
+class DefectRelocationError(RuntimeError):
+    """Raised when defect coordinates cannot be produced for an existing inspection."""
+
+
+class RelocationNotFoundError(DefectRelocationError):
+    """The inspection or its source photo does not exist."""
+
+
+class RelocationNotApplicableError(DefectRelocationError):
+    """The inspection has no defect to locate."""
+
+
+class RelocationVisionError(DefectRelocationError):
+    """The vision provider could not supply coordinates."""
+
+
+class RelocationStorageError(DefectRelocationError):
+    """The located coordinates could not be saved."""
 
 
 def load_and_validate_image(data: bytes) -> Image.Image:
@@ -198,6 +221,87 @@ def _normalize_category(finding: Finding, active_slugs: list[str]) -> Finding:
     )
 
 
+def _localize_defect(finding: Finding, detector: VisionDetector, image: Image.Image) -> Finding:
+    """Refine the analysis box with a dedicated localization call.
+
+    The analysis call already provides a box. A second, focused call tries to
+    improve it, but the analysis box is kept when that call fails or returns
+    nothing. This way a working analysis still produces an annotated image
+    even if the refinement step is unavailable.
+    """
+    has_defect = bool(finding.defect_types) or finding.condition == Condition.ROTTEN
+    if not finding.item_is_fruit or not has_defect:
+        return finding
+    locate = getattr(detector, "locate_defect", None)
+    if not callable(locate):
+        return finding
+    try:
+        bbox = locate(image, finding)
+    except DetectionError:
+        LOGGER.warning("Defect localization failed; keeping the analysis box.")
+        return finding
+    return finding if bbox is None else finding.model_copy(update={"bbox": bbox})
+
+
+def relocate_defect(inspection_id: str) -> InspectionResult:
+    """Locate the defect on a saved inspection and persist its coordinates.
+
+    This repairs older inspections whose analysis never returned a box, using
+    a dedicated second-stage call and the stored photo and defect description.
+    """
+    repository = InspectionRepository(settings.inspection_db_path)
+    try:
+        source = repository.get_report_source(inspection_id)
+    except HistoryStorageError as exc:
+        raise RelocationStorageError("Inspection source could not be loaded.") from exc
+    if source is None:
+        raise RelocationNotFoundError("Inspection source not found.")
+
+    result = source.result
+    has_defect = bool(result.defect_types) or result.grade == "Reject"
+    if not result.item_is_fruit or not has_defect:
+        raise RelocationNotApplicableError("This inspection does not report a defect to locate.")
+
+    observation = next(
+        (
+            note.removeprefix("Visual observation: ")
+            for note in result.verdict_notes
+            if note.startswith("Visual observation: ")
+        ),
+        "",
+    )
+    finding = Finding(
+        produce_type=result.produce_type,
+        detected_item=result.detected_item,
+        item_is_fruit=result.item_is_fruit,
+        condition=Condition.ROTTEN if result.grade == "Reject" else Condition.FRESH,
+        confidence=result.confidence or 0.0,
+        defect_types=result.defect_types,
+        severity=result.severity,
+        visual_observation=observation,
+    )
+    detector = create_vision_detector(supported_types=_active_category_slugs())
+    locate = getattr(detector, "locate_defect", None)
+    if not callable(locate):
+        raise RelocationVisionError("The configured vision provider cannot locate defects.")
+    try:
+        bbox = cast("BBox | None", locate(load_and_validate_image(source.original_image), finding))
+    except DetectionError as exc:
+        raise RelocationVisionError(
+            "The vision service could not locate the defect. Try again later."
+        ) from exc
+    if bbox is None:
+        raise RelocationVisionError("The defect could not be located in this photo. Try again.")
+
+    updated = result.model_copy(update={"bbox": bbox})
+    try:
+        repository.update_result(inspection_id, updated.model_dump_json())
+        repository.save_annotated(inspection_id, annotate_photo(source.original_image, bbox))
+    except HistoryStorageError as exc:
+        raise RelocationStorageError("The located defect could not be saved.") from exc
+    return updated
+
+
 def _active_category_slugs() -> list[str]:
     """Load the active category slugs, falling back to the built-in defaults."""
     try:
@@ -224,6 +328,7 @@ def inspect_produce(
     except DetectionError as exc:
         raise InspectionDetectionError("Vision detection failed.") from exc
     finding = _normalize_category(finding, supported)
+    finding = _localize_defect(finding, detector, image)
     grade_value, action = grade(finding)
     verdict_value = _verdict(grade_value, finding)
     result = InspectionResult(
@@ -254,11 +359,19 @@ def inspect_produce(
 def save_inspection_history(
     result: InspectionResult, image: Image.Image, original_image: bytes
 ) -> None:
-    """Persist an inspection result, original photo, and thumbnail."""
+    """Persist an inspection result, original photo, thumbnail, and defect annotation."""
+    repository = InspectionRepository(settings.inspection_db_path)
     try:
-        InspectionRepository(settings.inspection_db_path).save(result, image, original_image)
+        repository.save(result, image, original_image)
     except HistoryStorageError as exc:
         raise InspectionStorageError(str(exc)) from exc
+    if result.bbox is not None:
+        try:
+            repository.save_annotated(
+                result.inspection_id, annotate_photo(original_image, result.bbox)
+            )
+        except HistoryStorageError as exc:
+            LOGGER.warning("Annotated photo could not be saved: %s", exc)
 
 
 def list_inspection_history(limit: int, offset: int) -> InspectionHistoryResponse:
@@ -284,3 +397,30 @@ def get_inspection_thumbnail(inspection_id: str) -> bytes | None:
         return InspectionRepository(settings.inspection_db_path).get_thumbnail(inspection_id)
     except HistoryStorageError as exc:
         raise InspectionStorageError(str(exc)) from exc
+
+
+def get_inspection_original(inspection_id: str) -> bytes | None:
+    """Return the original photo normalized to a browser-friendly JPEG."""
+    try:
+        data = InspectionRepository(settings.inspection_db_path).get_original(inspection_id)
+    except HistoryStorageError as exc:
+        raise InspectionStorageError(str(exc)) from exc
+    if data is None:
+        return None
+    # annotate_photo with no box orients and re-encodes the upload as JPEG.
+    return annotate_photo(data, None)
+
+
+def get_inspection_annotated(inspection_id: str) -> bytes | None:
+    """Return the saved annotated photo, or draw one from stored coordinates."""
+    try:
+        repository = InspectionRepository(settings.inspection_db_path)
+        saved = repository.get_annotated(inspection_id)
+        if saved is not None:
+            return saved
+        source = repository.get_report_source(inspection_id)
+    except HistoryStorageError as exc:
+        raise InspectionStorageError(str(exc)) from exc
+    if source is None or source.result.bbox is None:
+        return None
+    return annotate_photo(source.original_image, source.result.bbox)

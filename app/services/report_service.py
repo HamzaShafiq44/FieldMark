@@ -44,11 +44,10 @@ class InspectionReportAIError(InspectionReportError):
 
 
 def generate_automatic_report(inspection_id: str) -> bool:
-    """Generate and persist the default report, falling back to deterministic text.
+    """Persist the default report narrative, falling back to deterministic text.
 
-    Returns True when a PDF was saved. AI or rendering failures never fail the
-    inspection itself; the record is left without a PDF so the interface can show
-    that the report is unavailable.
+    Returns True when report data was saved. AI or rendering failures never fail
+    the inspection itself; the interface then shows the report as unavailable.
     """
     try:
         generate_inspection_report(inspection_id, ReportUserType.FARMER)
@@ -68,7 +67,7 @@ def _generate_deterministic_report(inspection_id: str) -> bool:
         source = _load_report_source(repository, inspection_id)
         report_text = _deterministic_report_text(source.result)
         report_id = str(uuid4())
-        pdf = _render_report(
+        _render_report(
             report_id,
             source,
             ReportUserType.FARMER,
@@ -82,7 +81,6 @@ def _generate_deterministic_report(inspection_id: str) -> bool:
             ReportUserType.FARMER,
             "",
             report_text,
-            pdf,
         )
     except (InspectionReportError, ValidationError) as exc:
         LOGGER.error("Deterministic report fallback failed (%s).", type(exc).__name__)
@@ -128,23 +126,35 @@ def generate_inspection_report(
     voice_note: bytes | None = None,
     voice_note_filename: str = "voice-note.webm",
 ) -> bytes:
-    """Generate, persist, and return a PDF for a saved inspection."""
+    """Generate a PDF, persist its narrative, and return the PDF bytes."""
     repository = InspectionRepository(settings.inspection_db_path)
     source = _load_report_source(repository, inspection_id)
     transcript = _transcribe(voice_note, voice_note_filename)
     report_text = _write_report(source.result, user_type, transcript)
     report_id = str(uuid4())
     pdf = _render_report(report_id, source, user_type, report_text, transcript)
-    _save_report(repository, inspection_id, report_id, user_type, transcript, report_text, pdf)
+    _save_report(repository, inspection_id, report_id, user_type, transcript, report_text)
     return pdf
 
 
 def get_inspection_report(inspection_id: str) -> bytes | None:
-    """Return a previously generated PDF, or None when no report exists."""
+    """Rebuild the saved report as a PDF, or return None when no report exists."""
+    repository = InspectionRepository(settings.inspection_db_path)
     try:
-        return InspectionRepository(settings.inspection_db_path).get_report_pdf(inspection_id)
+        data = repository.get_report_data(inspection_id)
+        if data is None:
+            return None
+        source = repository.get_report_source(inspection_id)
     except HistoryStorageError as exc:
         raise InspectionReportError("Inspection report could not be loaded.") from exc
+    if source is None:
+        raise InspectionReportUnavailableError(NO_REPORT_SOURCE_MESSAGE)
+    try:
+        report_text = InspectionReportText.model_validate_json(data.report_text_json)
+        user_type = ReportUserType(data.user_type)
+    except (ValidationError, ValueError) as exc:
+        raise InspectionReportError("Inspection report data is invalid.") from exc
+    return _render_report(data.report_id, source, user_type, report_text, data.transcript)
 
 
 def _load_report_source(
@@ -219,11 +229,8 @@ def _save_report(
     user_type: ReportUserType,
     transcript: str,
     report_text: InspectionReportText,
-    pdf: bytes,
-    *,
-    save_pdf: bool = True,
 ) -> None:
-    """Persist the validated narrative and its downloadable PDF."""
+    """Persist only the validated narrative used to rebuild the PDF."""
     try:
         repository.save_report(
             inspection_id,
@@ -231,7 +238,6 @@ def _save_report(
             user_type,
             transcript,
             report_text.model_dump_json(),
-            pdf if save_pdf else b"",
         )
     except HistoryStorageError as exc:
         raise InspectionReportError("Inspection report could not be saved.") from exc

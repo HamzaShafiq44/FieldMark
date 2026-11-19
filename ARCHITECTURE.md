@@ -14,7 +14,7 @@ a professional PDF report — generated automatically, with an optional voice no
 
 **Non-goals (out of scope per the project SOW).** Hardware and sensors, user accounts,
 multi-tenancy, payments, production deployment and scaling, and training models from scratch.
-Inference uses a hosted API model (Groq) with an optional local Ollama provider behind the same
+Inference uses a hosted API model (Groq or Google Gemini) with an optional local Ollama provider behind the same
 interface.
 
 **Chosen user type.** Farmer (product grading after harvest): bruises, rot, mold, and deformities
@@ -31,6 +31,7 @@ flowchart LR
     API --> RPT["Report service"]
     SVC --> DET["VisionDetector"]
     DET --> Groq["Groq API"]
+    DET --> Gemini["Gemini API (optional)"]
     DET --> Ollama["Ollama (optional)"]
     RPT --> ReportAI["Groq report + Whisper"]
     SVC --> DB[("SQLite")]
@@ -39,7 +40,7 @@ flowchart LR
 ```
 
 The browser talks only to the FastAPI process, which in turn talks to exactly one configured
-vision provider. Groq is the default and the only provider used by default configuration; Ollama
+vision provider. Groq is the default; Gemini (free tier, structured JSON schemas) and Ollama are optional
 exists for the optional local-model path and is never selected automatically.
 
 ## 3. Components
@@ -53,6 +54,7 @@ exists for the optional local-model path and is never selected automatically.
 | `app/services/report_service.py` | Orchestrates transcription, AI narrative, PDF rendering, and report persistence |
 | `app/ai/provider_factory.py` | Builds the configured `VisionDetector` from settings (no network at construction) |
 | `app/ai/produce_groq.py` | Groq vision provider: base64 image prompt, JSON-mode response, schema validation |
+| `app/ai/produce_gemini.py` | Gemini provider: structured JSON schemas for analysis and defect localization |
 | `app/ai/produce_ollama.py` | Local Ollama provider: stdlib HTTP client, response size cap, schema validation |
 | `app/ai/groq_report.py` | Whisper transcription and one-shot report writing with validated JSON output |
 | `app/ai/schemas.py` | Pydantic contracts: `Finding`, `InspectionResult`, `InspectionReportText`, history models |
@@ -90,7 +92,7 @@ sequenceDiagram
     S->>S: deterministic grade + verdict + notes
     S->>DB: save result_json, thumbnail, original image
     S->>S: generate_automatic_report(id) for edible products
-    S->>DB: save report row and pdf_path (or leave NULL)
+    S->>DB: save report row (or leave NULL when unavailable)
     S-->>API: InspectionResult
     API-->>UI: verdict, grade, defects, severity, action, report_available
 ```
@@ -119,19 +121,21 @@ sequenceDiagram
         R->>R: build deterministic report text, log failure
     end
     R->>R: reportlab render with annotated photo
-    R->>DB: upsert report row and pdf_path
+    R->>DB: upsert report narrative (no PDF is stored)
     R-->>S: report_available
     S-->>API: InspectionResult
     API-->>UI: result + report_available
 ```
 
 Every edible product, including fruit outside the inspection categories, gets the same report
-layout. Non-edible items get no PDF. When AI report writing fails, the deterministic narrative
-uses the normal layout; if that fallback also fails, `pdf_path` stays NULL and the interface shows
-that the report is unavailable.
+layout. Non-edible items get no PDF. When AI report writing fails, the deterministic narrative is
+used instead; if that fallback also fails, no report row is stored and the interface shows the
+report as unavailable.
 
-Adding a voice note calls `POST /inspections/{id}/report`, which overwrites the stored PDF with a
-narrated version and returns it as a download.
+The PDF itself is not stored. `GET /inspections/{id}/report` rebuilds it from the saved narrative,
+result, and original photo on every download. Adding a voice note calls
+`POST /inspections/{id}/report`, which replaces the stored narrative with a narrated version and
+returns the rebuilt PDF as a download.
 
 
 ### 4.3 History and clearing
@@ -172,7 +176,6 @@ CREATE TABLE inspection_reports (
     user_type       TEXT NOT NULL,       -- farmer
     transcript      TEXT NOT NULL,       -- "" when no voice note
     report_text_json TEXT NOT NULL,      -- validated InspectionReportText
-    pdf_path        TEXT                 -- NULL when no PDF could be created
 );
 ```
 
@@ -182,9 +185,10 @@ slug stays stable. Disabling sets `is_active = 0` and removes the category from 
 Deletion is allowed only when no stored inspection references the slug; otherwise the API asks the
 client to disable it instead. At least one category must remain active.
 
-Images and PDFs are files under the data directory: `data/images/{inspection_id}_original.bin`,
+Images are files under the data directory: `data/images/{inspection_id}_original.bin`,
 `data/images/{inspection_id}_thumbnail.jpg`, and
-`data/reports/{inspection_id}_report.pdf`. SQLite stores only metadata and relative paths, so the
+`data/images/{inspection_id}_annotated.jpg`. SQLite stores only metadata and relative paths; PDFs
+are rebuilt on download and never stored, so the
 database stays small and portable.
 
 A legacy migration rebuilds databases that still have `thumbnail` and `original_image` BLOB
@@ -223,6 +227,7 @@ reaching the service layer.
 flowchart LR
     Settings["Settings (env)"] --> Factory["provider_factory.create_vision_detector()"]
     Factory -->|"VISION_PROVIDER=groq"| G["GroqVisionDetector"]
+    Factory -->|"VISION_PROVIDER=gemini"| Gm["GeminiVisionDetector"]
     Factory -->|"VISION_PROVIDER=ollama"| O["OllamaVisionDetector"]
     G --> Finding["Finding (validated)"]
     O --> Finding
@@ -232,6 +237,8 @@ flowchart LR
   both providers implement it and raise `DetectionError` on failure.
 - **Groq** (`meta-llama/llama-4-scout-17b-16e-instruct` by default) receives a base64 JPEG with
   `response_format={"type": "json_object"}` and temperature 0 for determinism.
+- **Gemini** sends an inline JPEG with `responseMimeType=application/json` and a `responseSchema`
+  for both calls; `gemini-4-hydrogen` analyzes and `gemini-3.5-flash-lite` localizes the defect.
 - **Ollama** posts to `{base_url}/api/chat` with `format=json`, a 120 s timeout, and a 64 KB
   response cap. It is opt-in (`VISION_PROVIDER=ollama`) and never a silent fallback.
 - **Report path.** `GROQ_TRANSCRIPTION_MODEL` (Whisper) transcribes audio; the report writer
@@ -271,6 +278,7 @@ result for any edible product and a plain "Unsupported item" result for everythi
 | Route | Oversized image/voice note | Read capped at limit + 1 byte → 413 |
 | Service | Bad image (format, verify, decompression bomb, OS) | `InvalidImageError` → 400, logged |
 | Provider | Groq API error, invalid JSON, missing key | `DetectionError` → 502, logged |
+| Provider | Gemini API/invalid structured JSON/missing key | `DetectionError` → 502, logged |
 | Provider | Ollama network/timeout/oversize | `DetectionError` → 502 |
 | Report AI | Model unavailable, rate-limited, invalid JSON, no response | Distinct actionable messages → 502 |
 | Report AI | Contradiction between transcript and visual result | Required conflict explanation, validated |
@@ -318,10 +326,10 @@ installs locked Python dependencies with `uv`, and runs Uvicorn as non-root user
 (uid 10001). FastAPI serves the API routes first and mounts `frontend/dist` at `/` for
 everything else, so the SPA and the API share one origin and no CORS configuration is needed.
 
-- Docker Compose publishes `${APP_PORT:-8000}:8000`, injects `.env` at runtime, and mounts the
-  named volume `inspection-data` at `/app/data`, so inspection history survives restarts,
-  rebuilds, and `docker compose down` (only `down -v` deletes it). The host `./data/` directory is
-  not used by Docker unless the volume mapping is changed to a bind mount.
+- Docker Compose publishes `${APP_PORT:-8000}:8000`, injects `.env` at runtime, and bind-mounts the
+  host `./data/` directory at `/app/data`, so inspection history survives restarts, rebuilds, and
+  `docker compose down`, and the SQLite file can be opened directly from the host. Deleting the
+  host `./data/` directory removes that data.
 - A `HEALTHCHECK` polls `/health` from inside the container.
 - SQLite requires a single instance; do not scale to replicas or run on multi-node hosts.
 
@@ -341,15 +349,15 @@ everything else, so the SPA and the API share one origin and no CORS configurati
 - `tests/test_config.py` — settings defaults and Ollama URL validation.
 
 The AI model is always mocked (`monkeypatch`) in unit tests, so the suite is deterministic and
-network-free; no test calls Groq.
+network-free; no test calls a live provider.
 
 ## 14. Limitations and known gaps
 
-- The bounding box is returned by the API and rendered in the PDF's annotated photo, but the web
-  UI does not yet draw the defect overlay, and the result panel does not yet display the
-  confidence score.
+- The bounding box is returned by the API, drawn by the backend into a saved annotated JPEG, and
+  rendered in the PDF. The result panel shows that image when coordinates are available, but does
+  not yet display the confidence score.
 - No audio-duration limit is enforced (size and post-transcription length are).
-- The Ollama provider is implemented and unit-tested but has no documented live run or
+- The Gemini and Ollama providers are implemented and unit-tested but have no documented live run or
   performance numbers; the local-model bonus (quantization/batching metrics) is not done.
 - The optional multi-inspection summary report from the SOW is not implemented.
 - SQLite limits the system to one writer process; concurrent-heavy or multi-node deployments

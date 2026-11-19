@@ -9,8 +9,5 @@ services:
     ports:
       - "${APP_PORT:-8000}:8000"
     volumes:
-      - inspection-data:/app/data
+      - ./data:/app/data
     restart: unless-stopped
-
-volumes:
-  inspection-data:

@@ -65,6 +65,8 @@ _PROMPT_TEMPLATE = (
     "If no clear defect is visible, say so. "
     "bbox must tightly enclose the single most prominent visible defect, not the whole fruit. "
     "If multiple defects are visible, locate the clearest or most severe one. "
+    "If defect_types is empty or severity is none, bbox MUST be null. "
+    "Only return a bbox when at least one defect type is reported with severity low or higher. "
     "Return null when no defect is visible or its location cannot be identified clearly. "
     "Use normalized coordinates relative to the full image, with the origin at top left. "
     'Report only what is visible. Use "unsure" when condition is unclear. '
@@ -93,3 +95,22 @@ def get_system_prompt(supported_types: Sequence[str] | None = None) -> str:
 
 INSPECTION_TEXT = "Identify the product, then inspect it for visible defects."
 SYSTEM_PROMPT = get_system_prompt()
+
+LOCALIZATION_TEMPLATE = (
+    "You already analyzed this product photo and reported these visible defect(s): __DEFECTS__. "
+    "Visible evidence from that analysis: __EVIDENCE__ "
+    "Look at the same photo again and locate the single clearest or most severe instance of the "
+    "reported defect. Reply with JSON only: "
+    '{"bbox": [x1, y1, x2, y2]} where every coordinate is normalized to the full image (0 to 1) '
+    "with the origin at the top left. The box must tightly enclose that defect, not the whole "
+    'fruit. If the defect cannot be clearly located in this photo, reply {"bbox": null}. '
+    "Do not report new defects, change the analysis, or include any other fields. "
+)
+LOCALIZATION_TEXT = "Locate the reported defect in this photo and return only its bounding box."
+
+
+def get_localization_prompt(defects: str, evidence: str) -> str:
+    """Build the second-stage prompt that asks only for defect coordinates."""
+    return LOCALIZATION_TEMPLATE.replace("__DEFECTS__", defects or "visible spoilage").replace(
+        "__EVIDENCE__", evidence or "No written description is available."
+    )

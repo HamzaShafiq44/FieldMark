@@ -33,6 +33,22 @@ from app.services import inspection_service, report_service
 from app.storage.inspection_repository import InspectionRepository
 
 
+class _LocatingDetector:
+    """Fake detector whose second stage returns a defect box."""
+
+    def __init__(self, finding: Finding, bbox: tuple[float, float, float, float]) -> None:
+        self.finding = finding
+        self.bbox = bbox
+
+    def __call__(self, _image: Image.Image) -> Finding:
+        return self.finding
+
+    def locate_defect(
+        self, _image: Image.Image, _finding: Finding
+    ) -> tuple[float, float, float, float] | None:
+        return self.bbox
+
+
 @pytest.fixture(autouse=True)
 def isolate_history_database(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Keep report persistence tests isolated from local application data."""
@@ -81,7 +97,10 @@ def test_report_source_and_pdf_are_persisted(monkeypatch: pytest.MonkeyPatch) ->
     assert len(re.findall(rb"/Type\s*/Page\b", pdf)) == 1
     assert len(re.findall(rb"/Subtype\s*/Image\b", pdf)) == 1
     assert b"/Title (Inspection Report" in pdf
-    assert repository.get_report_pdf(result.inspection_id) == pdf
+    assert repository.get_report_data(result.inspection_id) is not None
+    rebuilt = report_service.get_inspection_report(result.inspection_id)
+    assert rebuilt is not None
+    assert rebuilt.startswith(b"%PDF-")
     assert repository.list_history(10, 0)[0].report_available
 
 
@@ -91,15 +110,44 @@ def test_annotated_photo_is_included_for_reported_defect(
     """Include the second photo only when a defect and its location are reported."""
     result = inspection_service.inspect_produce(
         _jpeg_bytes(),
-        detect=lambda _: Finding(
-            produce_type=ProduceType.APPLE,
-            condition=Condition.FRESH,
-            confidence=0.8,
-            defect_types=[DefectType.BRUISE],
-            severity=Severity.LOW,
-            bbox=(0.2, 0.2, 0.8, 0.8),
+        detect=_LocatingDetector(
+            Finding(
+                produce_type=ProduceType.APPLE,
+                item_is_fruit=True,
+                condition=Condition.FRESH,
+                confidence=0.8,
+                defect_types=[DefectType.BRUISE],
+                severity=Severity.LOW,
+            ),
+            (0.2, 0.2, 0.8, 0.8),
         ),
     )
+    monkeypatch.setattr(report_service, "write_inspection_report", lambda *_: _report_text())
+
+    pdf = report_service.generate_inspection_report(result.inspection_id, ReportUserType.FARMER)
+
+    assert len(re.findall(rb"/Subtype\s*/Image\b", pdf)) == 2
+
+
+def test_annotated_photo_is_included_for_reject_without_defect_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Show the boxed photo when Reject comes from spoilage, not a labeled defect."""
+    result = inspection_service.inspect_produce(
+        _jpeg_bytes(),
+        detect=_LocatingDetector(
+            Finding(
+                produce_type=ProduceType.TOMATO,
+                item_is_fruit=True,
+                condition=Condition.ROTTEN,
+                confidence=0.9,
+                severity=Severity.NONE,
+            ),
+            (0.2, 0.2, 0.8, 0.8),
+        ),
+    )
+    assert result.grade == "Reject"
+    assert result.bbox is not None
     monkeypatch.setattr(report_service, "write_inspection_report", lambda *_: _report_text())
 
     pdf = report_service.generate_inspection_report(result.inspection_id, ReportUserType.FARMER)
@@ -479,7 +527,7 @@ def test_automatic_report_is_persisted_for_an_edible_product(
         ),
     )
     assert result.report_available is True
-    pdf = InspectionRepository(settings.inspection_db_path).get_report_pdf(result.inspection_id)
+    pdf = report_service.get_inspection_report(result.inspection_id)
     assert pdf is not None
     assert pdf.startswith(b"%PDF-")
 
@@ -504,7 +552,7 @@ def test_automatic_report_uses_the_normal_layout_for_out_of_category_food(
     )
     assert result.in_inspection_categories is False
     assert result.report_available is True
-    pdf = InspectionRepository(settings.inspection_db_path).get_report_pdf(result.inspection_id)
+    pdf = report_service.get_inspection_report(result.inspection_id)
     assert pdf is not None
     assert pdf.startswith(b"%PDF-")
 
@@ -530,13 +578,13 @@ def test_automatic_report_falls_back_when_ai_writing_fails(
         ),
     )
     assert result.report_available is True
-    pdf = InspectionRepository(settings.inspection_db_path).get_report_pdf(result.inspection_id)
+    pdf = report_service.get_inspection_report(result.inspection_id)
     assert pdf is not None
     assert pdf.startswith(b"%PDF-")
 
 
 def test_non_edible_item_gets_no_report(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Leave pdf_path empty for an item outside the food categories."""
+    """Leave no report for an item outside the food categories."""
     monkeypatch.setattr(
         inspection_service, "generate_automatic_report", report_service.generate_automatic_report
     )
@@ -552,4 +600,4 @@ def test_non_edible_item_gets_no_report(monkeypatch: pytest.MonkeyPatch) -> None
     )
     assert result.report_available is False
     repository = InspectionRepository(settings.inspection_db_path)
-    assert repository.get_report_pdf(result.inspection_id) is None
+    assert repository.get_report_data(result.inspection_id) is None
