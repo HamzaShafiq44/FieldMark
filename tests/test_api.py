@@ -53,10 +53,12 @@ def test_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
         confidence=0.9,
     )
     _patch_detector(monkeypatch, lambda _: finding)
-    response = client.post("/inspections/produce", files={"image": ("apple.jpg", _jpeg_bytes())})
+    response = client.post("/inspections/product", files={"image": ("apple.jpg", _jpeg_bytes())})
     assert response.status_code == 200
     assert response.json()["grade"] == "A"
     assert response.json()["produce_type"] == "apple"
+    assert response.json()["detected_item"] == ""
+    assert response.json()["in_inspection_categories"] is True
     assert response.json()["confidence"] == 0.9
     assert all(
         "%" not in note and "threshold" not in note.lower()

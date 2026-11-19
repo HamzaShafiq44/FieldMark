@@ -1,4 +1,4 @@
-"""Image validation and deterministic produce grading logic."""
+"""Image validation and deterministic product grading logic."""
 
 import logging
 from io import BytesIO
@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
 
+from app.ai.prompts import DEFAULT_SUPPORTED_TYPES
 from app.ai.provider_factory import create_vision_detector
 from app.ai.providers import DetectionError, VisionDetector
 from app.ai.schemas import (
@@ -28,7 +29,7 @@ FRESH_GRADE_A_MIN = 0.70
 FRESH_REVIEW_BELOW = 0.40
 ROTTEN_REJECT_MIN = 0.60
 REVIEW: tuple[Grade, str] = ("Needs manual review", "Inspect manually before sale.")
-PREMIUM_ACTION = "Sell as premium produce."
+PREMIUM_ACTION = "Sell as premium product."
 STANDARD_ACTION = "Sell soon, discount, or re-inspect."
 ROTTEN_ACTION = "Possible spoilage detected. Separate from batch; discard or compost."
 INVALID_IMAGE_MESSAGE = "Invalid or unreadable image."
@@ -65,7 +66,7 @@ def load_and_validate_image(data: bytes) -> Image.Image:
 
 
 def _grade_fresh(finding: Finding) -> tuple[Grade, str]:
-    """Grade fresh produce based on confidence and visible defects."""
+    """Grade a fresh product based on confidence and visible defects."""
     if finding.confidence < FRESH_REVIEW_BELOW:
         return REVIEW
     if finding.severity is Severity.HIGH or DefectType.MOLD in finding.defect_types:
@@ -76,8 +77,16 @@ def _grade_fresh(finding: Finding) -> tuple[Grade, str]:
 
 
 def grade(finding: Finding) -> tuple[Grade, str]:
-    """Return a deterministic grade and recommended action."""
-    if finding.produce_type is ProduceType.UNKNOWN or finding.condition is Condition.UNSURE:
+    """Return a deterministic grade and recommended action.
+
+    Edible products are graded with the same rules whether or not they belong to
+    the configured inspection categories. Anything that is not an edible product
+    is kept for manual review and gets no quality grade.
+    """
+    in_categories = finding.produce_type is not ProduceType.UNKNOWN
+    if not (finding.item_is_fruit or in_categories):
+        return REVIEW
+    if finding.condition is Condition.UNSURE:
         return REVIEW
     if finding.condition is Condition.ROTTEN:
         if finding.confidence >= ROTTEN_REJECT_MIN:
@@ -103,7 +112,7 @@ def _rotten_grade_note(grade_value: Grade) -> str:
 
 
 def _fresh_grade_notes(finding: Finding, grade_value: Grade) -> list[str]:
-    """Explain the fresh-produce grade using its confidence and reported defects."""
+    """Explain the fresh-product grade using its confidence and reported defects."""
     confidence = finding.confidence
     notes = ["The model reported the condition as fresh."]
     if confidence < FRESH_REVIEW_BELOW:
@@ -113,9 +122,11 @@ def _fresh_grade_notes(finding: Finding, grade_value: Grade) -> list[str]:
     if DefectType.MOLD in finding.defect_types:
         notes.append("Mold was reported; this triggers manual review under the grading rules.")
     if grade_value == "A":
-        notes.append("No defect severity was reported; the fruit meets the premium-grade criteria.")
+        notes.append(
+            "No defect severity was reported; the product meets the premium-grade criteria."
+        )
     elif grade_value == "B" and confidence < FRESH_GRADE_A_MIN:
-        notes.append("The fruit did not meet the premium-grade criteria, so it was graded B.")
+        notes.append("The product did not meet the premium-grade criteria, so it was graded B.")
     elif grade_value == "B":
         notes.append(
             f"Reported severity ({finding.severity.value}) prevents Grade A; the result is B."
@@ -125,10 +136,12 @@ def _fresh_grade_notes(finding: Finding, grade_value: Grade) -> list[str]:
 
 def _grade_notes(finding: Finding, grade_value: Grade) -> list[str]:
     """Explain the conditions that selected the grade."""
-    if finding.produce_type is ProduceType.UNKNOWN:
-        return ["The produce type is unsupported or unclear, so manual review is required."]
+    if finding.produce_type is ProduceType.UNKNOWN and not finding.item_is_fruit:
+        return ["The photo does not show an edible product, so no quality grade applies."]
+    if finding.produce_type is ProduceType.UNKNOWN and grade_value == "Needs manual review":
+        return ["The product is outside the inspection categories, so manual review is required."]
     if finding.condition is Condition.UNSURE:
-        return ["The produce condition is unclear, so manual review is required."]
+        return ["The product condition is unclear, so manual review is required."]
     if finding.condition is Condition.ROTTEN:
         return [_rotten_grade_note(grade_value)]
     return _fresh_grade_notes(finding, grade_value)
@@ -165,13 +178,22 @@ def _verdict_notes(finding: Finding, grade_value: Grade, verdict_value: Verdict)
     ]
 
 
+def _in_inspection_categories(finding: Finding) -> bool:
+    """Return whether the detected product belongs to the inspection categories."""
+    return finding.produce_type is not ProduceType.UNKNOWN
+
+
 def inspect_produce(
     data: bytes,
     detect: VisionDetector | None = None,
+    supported_types: list[str] | None = None,
 ) -> InspectionResult:
-    """Validate, analyze, and grade an uploaded piece of produce."""
+    """Validate, analyze, and grade an uploaded product image."""
+    supported = supported_types or list(DEFAULT_SUPPORTED_TYPES)
     image = load_and_validate_image(data)
-    detector = detect if detect is not None else create_vision_detector()
+    detector = detect
+    if detector is None:
+        detector = create_vision_detector(supported_types=supported)
     try:
         finding = detector(image)
     except DetectionError as exc:
@@ -181,6 +203,9 @@ def inspect_produce(
     result = InspectionResult(
         inspection_id=str(uuid4()),
         produce_type=finding.produce_type,
+        detected_item=finding.detected_item.strip(),
+        item_is_fruit=finding.item_is_fruit,
+        in_inspection_categories=_in_inspection_categories(finding),
         verdict=verdict_value,
         confidence=finding.confidence,
         bbox=finding.bbox,

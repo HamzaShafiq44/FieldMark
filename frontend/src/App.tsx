@@ -24,6 +24,7 @@ import './App.css'
 import {
   ApiError,
   checkApiHealth,
+  classifyInspectionResult,
   clearInspectionHistory,
   createInspectionReport,
   downloadInspectionReport,
@@ -41,19 +42,25 @@ const PDF_URL_REVOKE_DELAY_MS = 1_000
 const THEME_STORAGE_KEY = 'fieldmark-theme'
 const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const ACCEPTED_IMAGE_EXTENSIONS = '.jpg, .jpeg, .png, .webp'
-const PRODUCE_LABELS: Record<ProduceType, string> = {
+const PRODUCT_LABELS: Record<ProduceType, string> = {
   tomato: 'Tomato',
   apple: 'Apple',
   banana: 'Banana',
   orange: 'Orange',
-  unknown: 'Unidentified produce',
+  unknown: 'Unidentified product',
 }
-const PRODUCE_EMOJI: Record<ProduceType, string> = {
+const PRODUCT_EMOJI: Record<ProduceType, string> = {
   tomato: '🍅',
   apple: '🍎',
   banana: '🍌',
   orange: '🍊',
   unknown: '🌱',
+}
+
+function productName(item: { produce_type: ProduceType; detected_item?: string }): string {
+  const detected = item.detected_item?.trim()
+  if (!detected) return PRODUCT_LABELS[item.produce_type]
+  return detected.charAt(0).toUpperCase() + detected.slice(1)
 }
 const VERDICT_LABELS: Record<InspectionResult['verdict'], string> = {
   pass: 'Looks good',
@@ -153,6 +160,8 @@ function App() {
   const [reportActionId, setReportActionId] = useState<string | null>(null)
   const [reportError, setReportError] = useState<string | null>(null)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
+  const resultClassification = result ? classifyInspectionResult(result) : null
+  const isUnsupportedItem = resultClassification === 'unsupported_item'
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -371,8 +380,8 @@ function App() {
             <Leaf size={21} strokeWidth={2.2} />
           </span>
           <span className="brand-copy">
-            <span className="brand-name">fieldmark</span>
-            <span className="brand-caption">PRODUCE QUALITY STUDIO</span>
+            <span className="brand-name">FieldMark</span>
+            <span className="brand-caption">PRODUCT QUALITY STUDIO</span>
           </span>
         </a>
         <div className="topbar-right">
@@ -410,7 +419,7 @@ function App() {
               <span>at a glance.</span>
             </h1>
             <p className="hero-description">
-              A quick visual check for the produce you grow. Add a photo to see a quality grade,
+              A quick visual check for the products you grow. Add a photo to see a quality grade,
               visible defects, and a practical next step.
             </p>
             <div className="hero-footnote">
@@ -420,7 +429,7 @@ function App() {
           </div>
           <div
             className="hero-art"
-            aria-label="Supported produce: tomato, apple, banana, and orange"
+            aria-label="Supported products: tomato, apple, banana, and orange"
           >
             <div className="orbit orbit-one" />
             <div className="orbit orbit-two" />
@@ -444,7 +453,7 @@ function App() {
           </div>
         </section>
 
-        <section className="inspection-grid" aria-label="Produce inspection">
+        <section className="inspection-grid" aria-label="Product inspection">
           <section className="panel upload-panel">
             <div className="panel-heading">
               <div>
@@ -452,7 +461,7 @@ function App() {
                   01 <span>/</span> IMAGE INPUT
                 </p>
                 <h2>Start with a photo</h2>
-                <p className="panel-subtitle">One piece of produce, clearly in frame.</p>
+                <p className="panel-subtitle">One product, clearly in frame.</p>
               </div>
               <span className="heading-icon">
                 <ImagePlus size={19} />
@@ -461,7 +470,7 @@ function App() {
 
             <label
               className={`upload-zone ${isDragging ? 'upload-zone-dragging' : ''} ${previewUrl ? 'has-preview' : ''}`}
-              htmlFor="produce-file"
+              htmlFor="product-file"
               onDragOver={(event) => {
                 event.preventDefault()
                 setIsDragging(true)
@@ -470,7 +479,7 @@ function App() {
               onDrop={handleDrop}
             >
               <input
-                id="produce-file"
+                id="product-file"
                 className="visually-hidden"
                 type="file"
                 accept={ACCEPTED_IMAGE_EXTENSIONS}
@@ -479,7 +488,7 @@ function App() {
               {previewUrl ? (
                 <div className="image-preview">
                   <div className="image-canvas">
-                    <img src={previewUrl} alt="Selected produce preview" />
+                    <img src={previewUrl} alt="Selected product preview" />
                   </div>
                   <span className="preview-change">
                     <RefreshCw size={14} /> Replace photo
@@ -568,7 +577,7 @@ function App() {
                 </>
               ) : (
                 <>
-                  Inspect produce <ArrowRight size={18} />
+                  Inspect product <ArrowRight size={18} />
                 </>
               )}
             </button>
@@ -592,8 +601,12 @@ function App() {
                 <h2>{result ? 'Your quality readout' : 'Your result, right here.'}</h2>
               </div>
               {result && (
-                <span className={`verdict-pill verdict-${result.verdict}`}>
-                  {VERDICT_LABELS[result.verdict]}
+                <span
+                  className={`verdict-pill ${
+                    isUnsupportedItem ? 'verdict-needs_review' : `verdict-${result.verdict}`
+                  }`}
+                >
+                  {isUnsupportedItem ? 'Unsupported item' : VERDICT_LABELS[result.verdict]}
                 </span>
               )}
             </div>
@@ -628,122 +641,141 @@ function App() {
             ) : result ? (
               <div className="result-content">
                 <div className="grade-row">
-                  <div className="grade-block">
-                    <span className="result-label">QUALITY GRADE</span>
-                    <strong
-                      className={`grade-value grade-${result.grade === 'A' ? 'a' : result.grade === 'B' ? 'b' : 'review'}`}
-                    >
-                      {result.grade === 'Needs manual review' ? '—' : result.grade}
-                    </strong>
-                  </div>
-                  <div className="produce-identified">
-                    <span className="identified-emoji">{PRODUCE_EMOJI[result.produce_type]}</span>
+                  {!isUnsupportedItem && (
+                    <div className="grade-block">
+                      <span className="result-label">QUALITY GRADE</span>
+                      <strong
+                        className={`grade-value grade-${result.grade === 'A' ? 'a' : result.grade === 'B' ? 'b' : 'review'}`}
+                      >
+                        {result.grade === 'Needs manual review' ? '—' : result.grade}
+                      </strong>
+                    </div>
+                  )}
+                  <div className="product-identified">
+                    <span className="identified-emoji">{PRODUCT_EMOJI[result.produce_type]}</span>
                     <span>
-                      <small>IDENTIFIED AS</small>
-                      <strong>{PRODUCE_LABELS[result.produce_type]}</strong>
+                      <small>{isUnsupportedItem ? 'DETECTED' : 'IDENTIFIED AS'}</small>
+                      <strong>{productName(result)}</strong>
                     </span>
                   </div>
                 </div>
 
-                <div className="details-grid">
-                  <div className="detail-cell">
-                    <span className="result-label">VISIBLE DEFECTS</span>
-                    {result.defect_types.length ? (
-                      <div className="defect-tags">
-                        {result.defect_types.map((defect) => (
-                          <span className="defect-tag" key={defect}>
-                            {defect}
-                          </span>
-                        ))}
+                {resultClassification === 'out_of_categories' && (
+                  <p className="category-notice" role="status">
+                    This product is {productName(result)} - from out of inspection products
+                  </p>
+                )}
+                {isUnsupportedItem && (
+                  <p className="category-notice" role="status">
+                    Unsupported item
+                  </p>
+                )}
+
+                {!isUnsupportedItem && (
+                  <>
+                    <div className="details-grid">
+                      <div className="detail-cell">
+                        <span className="result-label">VISIBLE DEFECTS</span>
+                        {result.defect_types.length ? (
+                          <div className="defect-tags">
+                            {result.defect_types.map((defect) => (
+                              <span className="defect-tag" key={defect}>
+                                {defect}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <strong className="detail-value">
+                            <Check size={15} /> No visible defects
+                          </strong>
+                        )}
                       </div>
-                    ) : (
-                      <strong className="detail-value">
-                        <Check size={15} /> No visible defects
-                      </strong>
-                    )}
-                  </div>
-                  <div className="detail-cell">
-                    <span className="result-label">SEVERITY</span>
-                    <strong className={`severity-value severity-${result.severity}`}>
-                      {result.severity}
-                    </strong>
-                  </div>
-                </div>
+                      <div className="detail-cell">
+                        <span className="result-label">SEVERITY</span>
+                        <strong className={`severity-value severity-${result.severity}`}>
+                          {result.severity}
+                        </strong>
+                      </div>
+                    </div>
 
-                <section className="verdict-notes" aria-label="Decision basis">
-                  <h3>Why this verdict?</h3>
-                  <ul>
-                    {result.verdict_notes.map((note) => (
-                      <li key={note}>{note}</li>
-                    ))}
-                  </ul>
-                </section>
+                    <section className="verdict-notes" aria-label="Decision basis">
+                      <h3>Why this verdict?</h3>
+                      <ul>
+                        {result.verdict_notes.map((note) => (
+                          <li key={note}>{note}</li>
+                        ))}
+                      </ul>
+                    </section>
 
-                <div className="action-card">
-                  <span className="action-icon">
-                    <ArrowRight size={17} />
-                  </span>
-                  <span>
-                    <small>RECOMMENDED NEXT STEP</small>
-                    <strong>{result.recommended_action}</strong>
-                  </span>
-                </div>
+                    <div className="action-card">
+                      <span className="action-icon">
+                        <ArrowRight size={17} />
+                      </span>
+                      <span>
+                        <small>RECOMMENDED NEXT STEP</small>
+                        <strong>{result.recommended_action}</strong>
+                      </span>
+                    </div>
+                  </>
+                )}
                 <p className="result-disclaimer">{result.disclaimer}</p>
                 <p className="inspection-id">
                   INSPECTION {result.inspection_id.slice(0, 8).toUpperCase()}
                 </p>
-                <section className="report-controls" aria-label="PDF inspection report">
-                  <div>
-                    <h3>Inspection report</h3>
-                    <p>
-                      Download a one-page, farmer-friendly PDF with both photos and the inspection
-                      details. Keep voice notes brief so the full transcript fits.
-                    </p>
-                  </div>
-                  <label>
-                    Optional voice note
-                    <input
-                      ref={voiceNoteInput}
-                      type="file"
-                      accept="audio/*"
-                      onChange={(event) => {
-                        const selected = event.currentTarget.files?.[0] ?? null
-                        setReportError(null)
-                        if (selected && selected.size > MAX_VOICE_NOTE_BYTES) {
-                          setVoiceNoteFile(null)
-                          setReportError('Voice note is over 25 MB. Choose a smaller audio file.')
-                          event.currentTarget.value = ''
-                          return
-                        }
-                        setVoiceNoteFile(selected)
-                      }}
-                    />
-                  </label>
-                  {voiceNoteFile && <p className="report-file-name">{voiceNoteFile.name}</p>}
-                  <button
-                    className="report-button"
-                    type="button"
-                    onClick={() =>
-                      void handleGenerateReport(result.inspection_id, voiceNoteFile ?? undefined)
-                    }
-                    disabled={reportActionId !== null}
-                  >
-                    {reportActionId === result.inspection_id ? (
-                      <>
-                        <LoaderCircle className="spin" size={16} /> Preparing PDF
-                      </>
-                    ) : (
-                      <>
-                        <FileText size={16} /> Generate and download PDF
-                      </>
+                {!isUnsupportedItem && (
+                  <section className="report-controls" aria-label="PDF inspection report">
+                    <div>
+                      <h3>Inspection report</h3>
+                      <p>
+                        Download a one-page, farmer-friendly PDF with both photos and the inspection
+                        details. Keep voice notes brief so the full transcript fits.
+                      </p>
+                    </div>
+                    <label>
+                      Optional voice note
+                      <input
+                        ref={voiceNoteInput}
+                        type="file"
+                        accept="audio/*"
+                        onChange={(event) => {
+                          const selected = event.currentTarget.files?.[0] ?? null
+                          setReportError(null)
+                          if (selected && selected.size > MAX_VOICE_NOTE_BYTES) {
+                            setVoiceNoteFile(null)
+                            setReportError('Voice note is over 25 MB. Choose a smaller audio file.')
+                            event.currentTarget.value = ''
+                            return
+                          }
+                          setVoiceNoteFile(selected)
+                        }}
+                      />
+                    </label>
+                    {voiceNoteFile && <p className="report-file-name">{voiceNoteFile.name}</p>}
+                    <button
+                      className="report-button"
+                      type="button"
+                      onClick={() =>
+                        void handleGenerateReport(result.inspection_id, voiceNoteFile ?? undefined)
+                      }
+                      disabled={reportActionId !== null}
+                    >
+                      {reportActionId === result.inspection_id ? (
+                        <>
+                          <LoaderCircle className="spin" size={16} /> Preparing PDF
+                        </>
+                      ) : (
+                        <>
+                          <FileText size={16} /> Generate and download PDF
+                        </>
+                      )}
+                    </button>
+                    {reportError && (
+                      <p className="report-error" role="alert">
+                        {reportError}
+                      </p>
                     )}
-                  </button>
-                  {reportError && (
-                    <p className="report-error" role="alert">
-                      {reportError}
-                    </p>
-                  )}
-                </section>
+                  </section>
+                )}
               </div>
             ) : (
               <div className="result-message empty-message">
@@ -820,56 +852,73 @@ function App() {
             <p className="history-message">Loading saved inspections…</p>
           ) : history.length ? (
             <div className="history-list">
-              {history.map((item) => (
-                <article className="history-item" key={item.inspection_id}>
-                  <img
-                    className="history-thumbnail"
-                    src={inspectionThumbnailUrl(item.inspection_id)}
-                    alt={`${PRODUCE_LABELS[item.produce_type]} inspection`}
-                  />
-                  <div className="history-item-copy">
-                    <strong>{PRODUCE_LABELS[item.produce_type]}</strong>
-                    <span>{formatInspectionDate(item.created_at)}</span>
-                  </div>
-                  <div className="history-item-result">
-                    <span className={`verdict-pill verdict-${item.verdict}`}>
-                      {VERDICT_LABELS[item.verdict]}
-                    </span>
-                    <strong>{item.grade === 'Needs manual review' ? 'Review' : item.grade}</strong>
-                    {item.report_source_available ? (
-                      <button
-                        className="history-report-button"
-                        type="button"
-                        onClick={() =>
-                          void (item.report_available
-                            ? handleDownloadReport(item.inspection_id)
-                            : handleGenerateReport(item.inspection_id))
-                        }
-                        disabled={reportActionId !== null}
-                      >
-                        {reportActionId === item.inspection_id ? (
-                          <LoaderCircle className="spin" size={14} />
-                        ) : item.report_available ? (
-                          <>
-                            <Download size={14} /> PDF
-                          </>
-                        ) : (
-                          <>
-                            <FileText size={14} /> Create PDF
-                          </>
-                        )}
-                      </button>
-                    ) : (
-                      <span
-                        className="history-report-unavailable"
-                        title="Original photo is unavailable"
-                      >
-                        No PDF source
-                      </span>
-                    )}
-                  </div>
-                </article>
-              ))}
+              {history.map((item) => {
+                const classification = classifyInspectionResult(item)
+                const unsupported = classification === 'unsupported_item'
+                return (
+                  <article className="history-item" key={item.inspection_id}>
+                    <img
+                      className="history-thumbnail"
+                      src={inspectionThumbnailUrl(item.inspection_id)}
+                      alt={`${productName(item)} inspection`}
+                    />
+                    <div className="history-item-copy">
+                      <strong>{productName(item)}</strong>
+                      <span>{formatInspectionDate(item.created_at)}</span>
+                      {classification === 'out_of_categories' && (
+                        <small className="history-category-note">
+                          Not in inspection categories
+                        </small>
+                      )}
+                    </div>
+                    <div className="history-item-result">
+                      {!unsupported && (
+                        <>
+                          <span className={`verdict-pill verdict-${item.verdict}`}>
+                            {VERDICT_LABELS[item.verdict]}
+                          </span>
+                          <strong>
+                            {item.grade === 'Needs manual review' ? 'Review' : item.grade}
+                          </strong>
+                        </>
+                      )}
+                      {unsupported ? (
+                        <span className="history-unsupported">Unsupported item</span>
+                      ) : item.report_source_available ? (
+                        <button
+                          className="history-report-button"
+                          type="button"
+                          onClick={() =>
+                            void (item.report_available
+                              ? handleDownloadReport(item.inspection_id)
+                              : handleGenerateReport(item.inspection_id))
+                          }
+                          disabled={reportActionId !== null}
+                        >
+                          {reportActionId === item.inspection_id ? (
+                            <LoaderCircle className="spin" size={14} />
+                          ) : item.report_available ? (
+                            <>
+                              <Download size={14} /> PDF
+                            </>
+                          ) : (
+                            <>
+                              <FileText size={14} /> Create PDF
+                            </>
+                          )}
+                        </button>
+                      ) : (
+                        <span
+                          className="history-report-unavailable"
+                          title="Original photo is unavailable"
+                        >
+                          No PDF source
+                        </span>
+                      )}
+                    </div>
+                  </article>
+                )
+              })}
               {reportError && (
                 <p className="report-error" role="alert">
                   {reportError}
@@ -896,7 +945,7 @@ function App() {
                 <ImagePlus size={19} />
               </span>
               <strong>Choose a photo</strong>
-              <p>Use a clear image with one piece of produce in view.</p>
+              <p>Use a clear image with one product in view.</p>
             </div>
             <div className="step-connector">
               <ArrowRight size={17} />
@@ -927,7 +976,7 @@ function App() {
           <summary>
             <span>
               <span className="section-kicker">A QUICK VISUAL REFERENCE</span>
-              <strong>Ripeness cues for your produce</strong>
+              <strong>Ripeness cues for your products</strong>
             </span>
             <span className="ripeness-summary-action">Show / hide</span>
           </summary>

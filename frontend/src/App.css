@@ -921,7 +921,7 @@ main,
   color: #f2c08f;
 }
 
-.produce-identified {
+.product-identified {
   display: inline-flex;
   align-items: center;
   gap: 9px;
@@ -935,19 +935,19 @@ main,
   font-size: 26px;
 }
 
-.produce-identified > span:last-child {
+.product-identified > span:last-child {
   display: grid;
   gap: 2px;
 }
 
-.produce-identified small {
+.product-identified small {
   color: #aab9a8;
   font-size: 11px;
   font-weight: 750;
   letter-spacing: 0.9px;
 }
 
-.produce-identified strong {
+.product-identified strong {
   color: #f3f5ec;
   font-size: 13px;
   font-weight: 650;
@@ -1512,7 +1512,7 @@ main,
     font-size: 58px;
   }
 
-  .produce-identified {
+  .product-identified {
     gap: 7px;
     padding: 8px 9px;
   }
@@ -2069,6 +2069,27 @@ main,
   color: var(--muted);
   font-size: 10px;
   white-space: nowrap;
+}
+
+.history-category-note {
+  color: #b7791f;
+  font-size: 11px;
+}
+
+.history-unsupported {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.category-notice {
+  margin: 0;
+  padding: 10px 13px;
+  border: 1px solid rgba(255, 223, 154, 0.3);
+  border-radius: 11px;
+  color: #ffdf9a;
+  background: rgba(255, 223, 154, 0.08);
+  font-size: 13px;
 }
 
 .report-button:disabled,

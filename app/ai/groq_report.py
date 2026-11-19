@@ -12,7 +12,7 @@ from app.core.config import DEFAULT_GROQ_REPORT_MODEL, settings
 
 LOGGER = logging.getLogger(__name__)
 FARMER_AUDIENCE_GUIDANCE: str = (
-    "Write directly for a farmer using everyday, practical language. Explain unfamiliar produce "
+    "Write directly for a farmer using everyday, practical language. Explain unfamiliar product "
     "terms simply, use short sentences, and give clear next steps. Do not mention the audience or "
     "say the report is tailored."
 )

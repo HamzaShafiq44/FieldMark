@@ -1,4 +1,4 @@
-"""Deterministic tests for produce grading and inspection service behavior."""
+"""Deterministic tests for product grading and inspection service behavior."""
 
 from io import BytesIO
 from pathlib import Path
@@ -93,7 +93,7 @@ def test_grade(finding: Finding, expected: str) -> None:
     [ProduceType.TOMATO, ProduceType.APPLE, ProduceType.BANANA, ProduceType.ORANGE],
 )
 def test_inspect_supported_produce(produce_type: ProduceType) -> None:
-    """Preserve each supported produce type in the inspection result."""
+    """Preserve each supported product type in the inspection result."""
     finding = Finding(produce_type=produce_type, condition=Condition.FRESH, confidence=0.9)
     result = inspect_produce(_jpeg_bytes(), detect=lambda _: finding)
     assert result.grade == "A"
@@ -169,3 +169,70 @@ def test_invalid_image_rejected() -> None:
     """Reject bytes that cannot be decoded as an image."""
     with pytest.raises(InvalidImageError):
         inspect_produce(b"not an image")
+
+
+def test_out_of_category_fruit_gets_the_same_fresh_grade() -> None:
+    """Grade an edible product outside the categories with the normal fresh rules."""
+    finding = Finding(
+        produce_type=ProduceType.UNKNOWN,
+        detected_item="guava",
+        item_is_fruit=True,
+        condition=Condition.FRESH,
+        confidence=0.9,
+    )
+    result = inspect_produce(_jpeg_bytes(), detect=lambda _: finding)
+    assert result.grade == "A"
+    assert result.verdict == "pass"
+    assert result.detected_item == "guava"
+    assert result.item_is_fruit is True
+    assert result.in_inspection_categories is False
+
+
+def test_out_of_category_rotten_fruit_is_rejected() -> None:
+    """Apply the rotten-product rule to an edible product outside the categories."""
+    finding = Finding(
+        produce_type=ProduceType.UNKNOWN,
+        detected_item="grapes",
+        item_is_fruit=True,
+        condition=Condition.ROTTEN,
+        confidence=0.8,
+        defect_types=[DefectType.ROT],
+    )
+    result = inspect_produce(_jpeg_bytes(), detect=lambda _: finding)
+    assert result.grade == "Reject"
+    assert result.verdict == "defect"
+    assert result.in_inspection_categories is False
+
+
+def test_non_fruit_is_an_unsupported_item_without_a_grade() -> None:
+    """Keep a non-edible product out of grading and mark it unsupported."""
+    finding = Finding(
+        produce_type=ProduceType.UNKNOWN,
+        detected_item="car",
+        item_is_fruit=False,
+        condition=Condition.UNSURE,
+        confidence=0.95,
+    )
+    result = inspect_produce(_jpeg_bytes(), detect=lambda _: finding)
+    assert result.grade == "Needs manual review"
+    assert result.verdict == "needs_review"
+    assert result.in_inspection_categories is False
+    assert any("does not show an edible product" in note for note in result.verdict_notes)
+
+
+def test_out_of_category_type_from_model_is_kept_as_unknown() -> None:
+    """Accept a fruit name the model returns outside the enum instead of failing."""
+    finding = Finding.model_validate(
+        {
+            "produce_type": "guava",
+            "detected_item": "guava",
+            "item_is_fruit": True,
+            "condition": "fresh",
+            "confidence": 0.9,
+        }
+    )
+    assert finding.produce_type is ProduceType.UNKNOWN
+    assert finding.detected_item == "guava"
+    result = inspect_produce(_jpeg_bytes(), detect=lambda _: finding)
+    assert result.grade == "A"
+    assert result.in_inspection_categories is False

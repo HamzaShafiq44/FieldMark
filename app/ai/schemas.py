@@ -14,7 +14,7 @@ DEFAULT_DISCLAIMER = (
 
 
 class Condition(StrEnum):
-    """High-level visual condition reported for a piece of produce."""
+    """High-level visual condition reported for a product."""
 
     FRESH = "fresh"
     ROTTEN = "rotten"
@@ -31,7 +31,7 @@ class Severity(StrEnum):
 
 
 class DefectType(StrEnum):
-    """Supported visible produce defect categories."""
+    """Supported visible product defect categories."""
 
     BRUISE = "bruise"
     ROT = "rot"
@@ -40,7 +40,7 @@ class DefectType(StrEnum):
 
 
 class ProduceType(StrEnum):
-    """Produce categories supported by the inspection pipeline."""
+    """Product categories supported by the inspection pipeline."""
 
     TOMATO = "tomato"
     APPLE = "apple"
@@ -68,6 +68,8 @@ class Finding(BaseModel):
     """Validated, untrusted vision-model output."""
 
     produce_type: ProduceType
+    detected_item: str = Field(default="", max_length=40)
+    item_is_fruit: bool = False
     condition: Condition
     confidence: float = Field(ge=0.0, le=1.0)
     visual_observation: str = Field(default="", max_length=240)
@@ -77,6 +79,21 @@ class Finding(BaseModel):
         default=None,
         description="Normalized bounding box around the most prominent visible defect.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_detected_type(cls, data: object) -> object:
+        """Treat an out-of-list fruit name as an unknown category with a detected item."""
+        if not isinstance(data, dict):
+            return data
+        raw_type = str(data.get("produce_type", "")).strip().lower()
+        known_types = {item.value for item in ProduceType}
+        if raw_type and raw_type not in known_types:
+            updated = dict(data)
+            updated["produce_type"] = ProduceType.UNKNOWN.value
+            updated.setdefault("detected_item", raw_type)
+            return updated
+        return data
 
     @model_validator(mode="after")
     def clear_invalid_bbox(self) -> "Finding":
@@ -90,10 +107,13 @@ class Finding(BaseModel):
 
 
 class InspectionResult(BaseModel):
-    """Final deterministic produce grade and action for an inspected image."""
+    """Final deterministic product grade and action for an inspected image."""
 
     inspection_id: str
     produce_type: ProduceType
+    detected_item: str = Field(default="", max_length=40)
+    item_is_fruit: bool = False
+    in_inspection_categories: bool = True
     verdict: Verdict
     confidence: float | None
     bbox: BBox | None = Field(
@@ -113,6 +133,9 @@ class InspectionHistoryItem(BaseModel):
     inspection_id: str
     created_at: str
     produce_type: ProduceType
+    detected_item: str = ""
+    item_is_fruit: bool = False
+    in_inspection_categories: bool = True
     verdict: Verdict
     grade: Grade
     thumbnail_url: str

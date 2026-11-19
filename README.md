@@ -1,6 +1,6 @@
 # Visual Defect Inspector
 
-A software-only produce grading MVP. A farmer uploads or captures a fruit photo, the configured
+A software-only product grading MVP. A farmer uploads or captures a fruit photo, the configured
 vision provider returns a validated visual finding, and deterministic grading rules produce a
 verdict and next-step recommendation. Results are indicative and do not assess food safety.
 
@@ -22,7 +22,9 @@ The API route handles HTTP input and responses, the service validates images and
 rules, and the provider factory selects a vision implementation from configuration. Inspection
 results and small JPEG thumbnails are saved to SQLite at `data/inspections.sqlite3` by default.
 Original uploaded images are retained locally so inspection reports can include the source photo.
-Clearing inspection history deletes the saved images and reports.
+Clearing inspection history deletes the saved images and reports. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the component map, data model, API surface, failure
+modes, and deployment details.
 
 ## Run locally
 
@@ -80,6 +82,13 @@ Inspection history lives in the `inspection-data` Docker volume mounted at `/app
 survives container restarts and rebuilds. Secrets come from the runtime `.env` file and are never
 baked into the image.
 
+## Result behavior
+
+The vision model names the product in `detected_item` and marks whether it is an edible product
+in `item_is_fruit`. Edible products are graded with the same rules even when they are outside the
+four inspection categories; those results also state that the product is outside the categories.
+Anything that is not an edible product is shown as an "Unsupported item" with no grade or verdict.
+
 ## Vision providers
 
 Groq is the default (`VISION_PROVIDER=groq`); set `GROQ_API_KEY` and optionally
@@ -92,9 +101,9 @@ silently switch providers if the selected provider fails.
 
 ## Inspection history
 
-Every successful inspection is stored locally in SQLite with its verdict, grade, produce type,
-date, and a small thumbnail. The original photo is not stored. History is available through
-`GET /inspections/history`; each thumbnail is served from
+Every successful inspection is stored locally in SQLite with its verdict, grade, product type,
+date, and a small thumbnail. The original photo is retained so PDF reports can include it. History
+is available through `GET /inspections/history`; each thumbnail is served from
 `GET /inspections/history/{inspection_id}/thumbnail`.
 
 Set `INSPECTION_DB_PATH` to use a different local database path. The default `data/` directory is

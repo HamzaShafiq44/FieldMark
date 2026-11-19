@@ -1,4 +1,4 @@
-"""Local Ollama vision provider for produce inspection."""
+"""Local Ollama vision provider for product inspection."""
 
 import json
 import logging
@@ -9,7 +9,7 @@ from PIL import Image
 from pydantic import BaseModel, ValidationError
 
 from app.ai.image_encoding import encode_image_base64
-from app.ai.prompts import INSPECTION_TEXT, SYSTEM_PROMPT
+from app.ai.prompts import DEFAULT_SUPPORTED_TYPES, INSPECTION_TEXT, get_system_prompt
 from app.ai.providers import DetectionError
 from app.ai.schemas import Finding
 
@@ -31,12 +31,18 @@ class _OllamaResponse(BaseModel):
 
 
 class OllamaVisionDetector:
-    """Use a locally hosted Ollama vision model to inspect produce."""
+    """Use a locally hosted Ollama vision model to inspect a product."""
 
-    def __init__(self, base_url: str, model: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        supported_types: list[str] | None = None,
+    ) -> None:
         """Configure the local Ollama endpoint and vision model."""
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.supported_types = supported_types or list(DEFAULT_SUPPORTED_TYPES)
 
     def __call__(self, image: Image.Image) -> Finding:
         """Analyze an image and validate the model's structured finding."""
@@ -55,7 +61,7 @@ class OllamaVisionDetector:
             "format": "json",
             "options": {"temperature": 0},
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": get_system_prompt(self.supported_types)},
                 {
                     "role": "user",
                     "content": INSPECTION_TEXT,

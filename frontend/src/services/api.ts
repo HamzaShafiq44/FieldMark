@@ -10,6 +10,9 @@ export type BoundingBox = [number, number, number, number]
 export interface InspectionResult {
   inspection_id: string
   produce_type: ProduceType
+  detected_item: string
+  item_is_fruit: boolean
+  in_inspection_categories: boolean
   verdict: Verdict
   confidence: number | null
   bbox: BoundingBox | null
@@ -25,11 +28,33 @@ export interface InspectionHistoryItem {
   inspection_id: string
   created_at: string
   produce_type: ProduceType
+  detected_item: string
+  item_is_fruit: boolean
+  in_inspection_categories: boolean
   verdict: Verdict
   grade: Grade
   thumbnail_url: string
   report_available: boolean
   report_source_available: boolean
+}
+
+/** Result classification shown by the interface. */
+export type ResultClassification = 'supported' | 'out_of_categories' | 'unsupported_item'
+
+/**
+ * Classify a result by whether the detected product belongs to the inspection categories.
+ *
+ * Edible products outside the categories still receive a normal grade and verdict.
+ * Anything that is not an edible product is an unsupported item with no grade or verdict.
+ */
+export function classifyInspectionResult(item: {
+  produce_type: ProduceType
+  detected_item?: string
+  item_is_fruit?: boolean
+  in_inspection_categories?: boolean
+}): ResultClassification {
+  if (item.in_inspection_categories ?? item.produce_type !== 'unknown') return 'supported'
+  return item.item_is_fruit ? 'out_of_categories' : 'unsupported_item'
 }
 
 export class ApiError extends Error {
@@ -57,7 +82,7 @@ export async function inspectProduce(file: File): Promise<InspectionResult> {
   const formData = new FormData()
   formData.append('image', file)
 
-  const response = await fetch(apiUrl('/inspections/produce'), {
+  const response = await fetch(apiUrl('/inspections/product'), {
     method: 'POST',
     body: formData,
   })

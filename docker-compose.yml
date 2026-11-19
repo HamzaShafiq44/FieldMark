@@ -1,6 +1,7 @@
 services:
   app:
-    build: .
+    build: 
+          dockerfile: Dockerfile
     image: visual-defect-inspector:0.1.0
     env_file: .env
     environment:

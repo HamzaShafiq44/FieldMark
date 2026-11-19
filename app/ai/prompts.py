@@ -1,5 +1,9 @@
 """Shared visual inspection prompts for vision providers."""
 
+from collections.abc import Sequence
+
+DEFAULT_SUPPORTED_TYPES = ("tomato", "apple", "banana", "orange")
+
 FRUIT_VISUAL_GUIDANCE = (
     "For oranges, rot may appear as water-soaked, translucent, or dark brown, black, or gray "
     "patches; mold as fuzzy or powdery blue, green, white, or gray patches, including near the "
@@ -31,16 +35,23 @@ RIPENESS_VISUAL_GUIDANCE = (
     "Do not infer ripeness, flavor, or internal quality from color alone. Never label fruit "
     "rotten or defective only because it appears unripe; unripe fruit may still be fresh. "
 )
-SYSTEM_PROMPT = (
-    "You inspect one photo for a produce-grading app. Supported produce types are tomato, "
-    "apple, banana, and orange. Reply with JSON only: "
-    '{"produce_type": "tomato"|"apple"|"banana"|"orange"|"unknown", '
+_PROMPT_TEMPLATE = (
+    "You inspect one photo for a product-grading app. The inspection categories are "
+    "__SUPPORTED_TYPES__. First identify the main product in the photo. "
+    "Reply with JSON only: "
+    '{"produce_type": __PRODUCE_TYPE_VALUES__|"unknown", '
+    '"detected_item": "short common name of the product", '
+    '"item_is_fruit": true|false, '
     '"condition": "fresh"|"rotten"|"unsure", "confidence": 0..1, '
     '"visual_observation": "short description of visible evidence", '
     '"defect_types": ["bruise"|"rot"|"mold"|"deformity"], '
     '"severity": "none"|"low"|"medium"|"high", "bbox": [x1,y1,x2,y2] or null}. '
-    'Use "unknown" if no supported produce is visible or its type is unclear. '
-    "Distinguish produce by visible shape and surface, not color alone: bananas are elongated "
+    "Set item_is_fruit to true for edible fruits and vegetables, including products outside the "
+    "inspection categories, and put the common name in detected_item, such as guava or grapes. "
+    "For anything that is not an edible fruit or vegetable, set item_is_fruit to false, "
+    'produce_type to "unknown", condition to "unsure", and report no defects. '
+    'Use produce_type "unknown" when the product is not one of the inspection categories. '
+    "Distinguish products by visible shape and surface, not color alone: bananas are elongated "
     "and curved with a crown; oranges are round citrus with a dimpled rind. "
     'If these cues are not clear enough, use "unknown" rather than guess. '
     + FRUIT_VISUAL_GUIDANCE
@@ -59,4 +70,26 @@ SYSTEM_PROMPT = (
     'Report only what is visible. Use "unsure" when condition is unclear. '
     "Never make food-safety claims."
 )
-INSPECTION_TEXT = "Identify the produce type and inspect it for visible defects."
+
+
+def _format_type_list(supported_types: Sequence[str]) -> str:
+    """Join category names into a readable list for the prompt."""
+    types = [item.strip().lower() for item in supported_types if item.strip()]
+    if not types:
+        return ", ".join(DEFAULT_SUPPORTED_TYPES)
+    if len(types) == 1:
+        return types[0]
+    return ", ".join(types[:-1]) + f", and {types[-1]}"
+
+
+def get_system_prompt(supported_types: Sequence[str] | None = None) -> str:
+    """Build the vision prompt for the configured inspection categories."""
+    types = list(supported_types or DEFAULT_SUPPORTED_TYPES)
+    quoted = "|".join(f'"{item}"' for item in types)
+    return _PROMPT_TEMPLATE.replace("__SUPPORTED_TYPES__", _format_type_list(types)).replace(
+        "__PRODUCE_TYPE_VALUES__", quoted
+    )
+
+
+INSPECTION_TEXT = "Identify the product, then inspect it for visible defects."
+SYSTEM_PROMPT = get_system_prompt()

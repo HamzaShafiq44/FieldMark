@@ -194,8 +194,8 @@ def test_report_with_long_voice_note_fits_on_one_page(monkeypatch: pytest.Monkey
     assert page_count == 1
 
 
-def test_transcript_too_long_for_one_page_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reject transcripts that cannot be fully included in a one-page report."""
+def test_transcript_too_long_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reject voice-note transcripts that exceed the character cap."""
     result = inspection_service.inspect_produce(
         _jpeg_bytes(),
         detect=lambda _: Finding(
@@ -217,7 +217,7 @@ def test_transcript_too_long_for_one_page_is_rejected(monkeypatch: pytest.Monkey
         ),
     )
 
-    with pytest.raises(report_service.InspectionReportInputError, match="one-page report"):
+    with pytest.raises(report_service.InspectionReportInputError, match="too long"):
         report_service.generate_inspection_report(
             result.inspection_id,
             ReportUserType.FARMER,

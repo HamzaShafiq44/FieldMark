@@ -1,4 +1,4 @@
-"""HTTP routes for produce inspections."""
+"""HTTP routes for product inspections."""
 
 from pathlib import Path
 from typing import Annotated
@@ -54,8 +54,9 @@ VOICE_NOTE_MEDIA_TYPES = frozenset(
 
 
 @router.post("/tomato", response_model=InspectionResult, include_in_schema=False)
-@router.post("/produce", response_model=InspectionResult)
-async def inspect_produce_route(
+@router.post("/produce", response_model=InspectionResult, include_in_schema=False)
+@router.post("/product", response_model=InspectionResult)
+async def inspect_product_route(
     image: Annotated[UploadFile, File()],
 ) -> InspectionResult:
     """Analyze an uploaded tomato, apple, banana, or orange image."""

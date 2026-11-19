@@ -11,7 +11,7 @@ from pydantic import SecretStr, ValidationError
 
 from app.ai.produce_groq import GroqVisionDetector
 from app.ai.produce_ollama import MAX_RESPONSE_BYTES, OllamaVisionDetector
-from app.ai.prompts import SYSTEM_PROMPT
+from app.ai.prompts import SYSTEM_PROMPT, get_system_prompt
 from app.ai.provider_factory import create_vision_detector
 from app.ai.providers import DetectionError
 from app.core.config import Settings
@@ -121,3 +121,12 @@ def test_ollama_rejects_oversized_response() -> None:
         pytest.raises(DetectionError, match="response exceeded the size limit"),
     ):
         detector(_image())
+
+
+def test_prompt_is_built_from_configured_categories() -> None:
+    """Build the prompt dynamically and request any fruit, not only the categories."""
+    prompt = get_system_prompt(["guava", "mango"])
+    assert "guava, and mango" in prompt
+    assert '"guava"|"mango"' in prompt
+    assert "item_is_fruit" in prompt
+    assert "detected_item" in prompt

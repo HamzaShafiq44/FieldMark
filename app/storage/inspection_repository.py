@@ -36,7 +36,7 @@ INSERT INTO inspections (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 """
 SELECT_HISTORY_ITEMS = """
-SELECT inspection_id, created_at, produce_type, verdict, grade,
+SELECT inspection_id, created_at, produce_type, verdict, grade, result_json,
        EXISTS(
            SELECT 1 FROM inspection_reports
            WHERE inspection_reports.inspection_id = inspections.inspection_id
@@ -60,12 +60,12 @@ CREATE TABLE IF NOT EXISTS inspection_reports (
     user_type TEXT NOT NULL,
     transcript TEXT NOT NULL,
     report_text_json TEXT NOT NULL,
-    pdf BLOB NOT NULL
+    pdf_path TEXT
 )
 """
 INSERT_REPORT = """
 INSERT INTO inspection_reports (
-    inspection_id, report_id, created_at, user_type, transcript, report_text_json, pdf
+    inspection_id, report_id, created_at, user_type, transcript, report_text_json, pdf_path
 ) VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(inspection_id) DO UPDATE SET
     report_id = excluded.report_id,
@@ -73,9 +73,9 @@ ON CONFLICT(inspection_id) DO UPDATE SET
     user_type = excluded.user_type,
     transcript = excluded.transcript,
     report_text_json = excluded.report_text_json,
-    pdf = excluded.pdf
+    pdf_path = excluded.pdf_path
 """
-SELECT_REPORT_PDF = "SELECT pdf FROM inspection_reports WHERE inspection_id = ?"
+SELECT_REPORT_PDF = "SELECT pdf_path FROM inspection_reports WHERE inspection_id = ?"
 DELETE_REPORTS = "DELETE FROM inspection_reports"
 DELETE_INSPECTIONS = "DELETE FROM inspections"
 
@@ -128,19 +128,7 @@ class InspectionRepository:
         try:
             with self._connection() as connection:
                 rows = connection.execute(SELECT_HISTORY_ITEMS, (limit, offset)).fetchall()
-            return [
-                InspectionHistoryItem(
-                    inspection_id=row["inspection_id"],
-                    created_at=row["created_at"],
-                    produce_type=row["produce_type"],
-                    verdict=row["verdict"],
-                    grade=row["grade"],
-                    thumbnail_url=HISTORY_THUMBNAIL_PATH.format(inspection_id=row["inspection_id"]),
-                    report_available=bool(row["report_available"]),
-                    report_source_available=bool(row["report_source_available"]),
-                )
-                for row in rows
-            ]
+            return [_history_item(row) for row in rows]
         except (OSError, sqlite3.Error) as exc:
             LOGGER.error("Inspection history read failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection history could not be loaded.") from exc
@@ -181,7 +169,14 @@ class InspectionRepository:
         pdf: bytes,
     ) -> None:
         """Persist a generated PDF and its validated source narrative."""
+        # Save PDF to disk and store path in database
         try:
+            reports_dir = self.database_path.parent / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            pdf_path = reports_dir / f"{inspection_id}_report.pdf"
+            with open(pdf_path, "wb") as f:
+                f.write(pdf)
+
             created_at = datetime.now(UTC).isoformat()
             with self._connection() as connection:
                 connection.execute(
@@ -193,7 +188,7 @@ class InspectionRepository:
                         user_type.value,
                         transcript,
                         report_text_json,
-                        pdf,
+                        str(pdf_path),
                     ),
                 )
         except (OSError, sqlite3.Error) as exc:
@@ -205,7 +200,12 @@ class InspectionRepository:
         try:
             with self._connection() as connection:
                 row = connection.execute(SELECT_REPORT_PDF, (inspection_id,)).fetchone()
-            return bytes(row["pdf"]) if row is not None else None
+            if row is None or row["pdf_path"] is None:
+                return None
+            pdf_path = Path(row["pdf_path"])
+            if pdf_path.exists():
+                return pdf_path.read_bytes()
+            return None
         except (OSError, sqlite3.Error) as exc:
             LOGGER.error("Inspection report read failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection report could not be loaded.") from exc
@@ -215,6 +215,12 @@ class InspectionRepository:
         try:
             with self._connection() as connection:
                 connection.execute(DELETE_REPORTS)
+                # Also delete PDF files from disk
+                reports_dir = self.database_path.parent / "reports"
+                if reports_dir.exists():
+                    import shutil
+
+                    shutil.rmtree(reports_dir)
                 connection.execute(DELETE_INSPECTIONS)
         except (OSError, sqlite3.Error) as exc:
             LOGGER.error("Inspection history clear failed (%s).", type(exc).__name__)
@@ -231,6 +237,35 @@ class InspectionRepository:
             connection.execute(CREATE_REPORTS_TABLE)
             with connection:
                 yield connection
+
+
+def _history_item(row: sqlite3.Row) -> InspectionHistoryItem:
+    """Build a public history item, tolerating older stored results."""
+    result = _stored_result(row["result_json"])
+    return InspectionHistoryItem(
+        inspection_id=row["inspection_id"],
+        created_at=row["created_at"],
+        produce_type=row["produce_type"],
+        detected_item=result.detected_item if result else "",
+        item_is_fruit=result.item_is_fruit if result else False,
+        in_inspection_categories=result.in_inspection_categories if result else True,
+        verdict=row["verdict"],
+        grade=row["grade"],
+        thumbnail_url=HISTORY_THUMBNAIL_PATH.format(inspection_id=row["inspection_id"]),
+        report_available=bool(row["report_available"]),
+        report_source_available=bool(row["report_source_available"]),
+    )
+
+
+def _stored_result(raw: str | None) -> InspectionResult | None:
+    """Parse a stored result, returning None when older data cannot be read."""
+    if not raw:
+        return None
+    try:
+        return InspectionResult.model_validate_json(raw)
+    except ValidationError:
+        LOGGER.warning("Ignoring an unreadable stored inspection result.")
+        return None
 
 
 def _add_missing_history_columns(connection: sqlite3.Connection) -> None:

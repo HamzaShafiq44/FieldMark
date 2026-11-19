@@ -135,6 +135,8 @@ def _save_report(
     transcript: str,
     report_text: InspectionReportText,
     pdf: bytes,
+    *,
+    save_pdf: bool = True,
 ) -> None:
     """Persist the validated narrative and its downloadable PDF."""
     try:
@@ -144,7 +146,7 @@ def _save_report(
             user_type,
             transcript,
             report_text.model_dump_json(),
-            pdf,
+            pdf if save_pdf else b"",
         )
     except HistoryStorageError as exc:
         raise InspectionReportError("Inspection report could not be saved.") from exc
