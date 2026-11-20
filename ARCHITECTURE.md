@@ -147,9 +147,10 @@ sell-or-discard advice.
 ```mermaid
 flowchart LR
     Farmer([Farmer]) --> UI["React SPA (Vite)"]
-    UI --> API["FastAPI /inspections"]
+    UI --> API["FastAPI API"]
     API --> SVC["Inspection service"]
     API --> RPT["Report service"]
+    API --> CAT["Category API /api/categories"]
     SVC --> DET["VisionDetector"]
     DET --> Groq["Groq API (vision)"]
     DET --> Gemini["Gemini API (vision)"]
@@ -158,13 +159,14 @@ flowchart LR
     RPT --> ReportAI["Groq report writer"]
     SVC --> DB[("SQLite")]
     RPT --> DB
+    CAT --> DB
     RPT --> PDF["PDF renderer (reportlab)"]
 ```
 
-The browser talks only to the FastAPI process. Groq is the default vision provider and Gemini
-(free tier, structured JSON schemas) is the optional alternative; the application never silently
-switches providers. Voice-note transcription always uses Gemini 3.5 Transcribe, regardless of the
-selected vision provider.
+The browser talks only to the FastAPI process, which also serves the category API and `/health`.
+Groq is the default vision provider and Gemini (free tier, structured JSON schemas) is the optional
+alternative; the application never silently switches providers. Voice-note transcription always
+uses Gemini 3.5 Transcribe, regardless of the selected vision provider.
 
 ## 5. Components
 
@@ -196,7 +198,7 @@ selected vision provider.
 
 ## 6. Data flow
 
-### 4.1 Inspection
+### 6.1 Inspection
 
 ```mermaid
 sequenceDiagram
@@ -212,17 +214,19 @@ sequenceDiagram
     API->>S: inspect_produce(bytes) in threadpool
     S->>S: load_and_validate_image (format, verify, pixels)
     S->>D: detect(image)
-    D->>D: prompt + JSON-mode call, Finding validation
+    D->>D: prompt + JSON-structured call, Finding validation
     D-->>S: Finding
+    S->>D: locate_defect(image, finding) for reported defects
+    D-->>S: refined bbox or none
     S->>S: deterministic grade + verdict + notes
-    S->>DB: save result_json, thumbnail, original image
+    S->>DB: save result_json, thumbnail, original image, annotated JPEG when a bbox exists
     S->>S: generate_automatic_report(id) for edible products
     S->>DB: save report row (or leave NULL when unavailable)
     S-->>API: InspectionResult
     API-->>UI: verdict, grade, defects, severity, action, report_available
 ```
 
-### 4.2 Automatic PDF report with fallback
+### 6.2 Automatic PDF report with fallback
 
 ```mermaid
 sequenceDiagram
@@ -239,13 +243,14 @@ sequenceDiagram
     S->>DB: save result, thumbnail, original image
     S->>R: generate_automatic_report(id) for edible products
     R->>DB: load original image + stored result
+    Note over R: Any voice-note transcript was produced by Gemini at inspection time and stored on the result
     R->>W: write narrative from result
     alt AI narrative succeeds
         W-->>R: validated InspectionReportText
     else AI or rendering fails
         R->>R: build deterministic report text, log failure
     end
-    R->>R: reportlab render with annotated photo
+    R->>R: reportlab render (original photo + bbox drawn in memory)
     R->>DB: upsert report narrative (no PDF is stored)
     R-->>S: report_available
     S-->>API: InspectionResult
@@ -264,7 +269,7 @@ with a voice note: Gemini transcribes it, the stored narrative is replaced with 
 and the rebuilt PDF is returned as a download. The web UI does not expose this update action.
 
 
-### 4.3 History and clearing
+### 6.3 History and clearing
 
 `GET /inspections/history` returns reverse-chronological summaries with `report_available` and
 `report_source_available` flags. `DELETE /inspections/history` deletes database rows and removes
