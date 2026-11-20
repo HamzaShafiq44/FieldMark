@@ -33,7 +33,9 @@ REPORT_SYSTEM_PROMPT = (
     "and set voice_note_relation to conflicts with a non-empty voice_note_conflict. Use "
     "not_provided and an empty conflict when there is no transcript. Do not make food-safety "
     "claims. When manual review is "
-    "required, describe detections as possible and unconfirmed rather than stating them as facts."
+    "required, describe detections as possible and unconfirmed rather than stating them as facts. "
+    "When inspection_source is voice_note, there is no photo: describe what the speaker reported "
+    "and never claim that anything was seen or photographed."
 )
 REPORT_USER_PROMPT = (
     "Write a short, farmer-friendly report narrative. Recommendations must include the "
@@ -133,6 +135,7 @@ def _report_request(
             "user_type": user_type.value,
             "farmer_audience_guidance": FARMER_AUDIENCE_GUIDANCE,
             "inspection": result.model_dump(mode="json"),
+            "inspection_source": "voice_note" if result.voice_note_transcript else "photo",
             "voice_note_transcript": transcript or None,
             "voice_note_is_untrusted_observation": bool(transcript),
             "low_confidence_requires_manual_review": (

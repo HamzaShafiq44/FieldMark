@@ -56,7 +56,9 @@ exists for the optional local-model path and is never selected automatically.
 | `app/ai/produce_groq.py` | Groq vision provider: base64 image prompt, JSON-mode response, schema validation |
 | `app/ai/produce_gemini.py` | Gemini provider: structured JSON schemas for analysis and defect localization |
 | `app/ai/produce_ollama.py` | Local Ollama provider: stdlib HTTP client, response size cap, schema validation |
-| `app/ai/groq_report.py` | Whisper transcription and one-shot report writing with validated JSON output |
+| `app/ai/groq_report.py` | Whisper transcription (report voice notes) and one-shot report writing with validated JSON output |
+| `app/ai/gemini_transcribe.py` | Gemini 3.5 Transcribe for voice-note-only inspections |
+| `app/ai/transcription.py` | Provider dispatcher for voice-note-only inspection transcription |
 | `app/ai/schemas.py` | Pydantic contracts: `Finding`, `InspectionResult`, `InspectionReportText`, history models |
 | `app/ai/prompts.py` | System/user prompts for the vision model, including injection-hardening rules |
 | `app/reports/pdf_renderer.py` | One-page reportlab PDF: metadata, evidence photos, quick-scan card, narrative |
@@ -241,8 +243,11 @@ flowchart LR
   for both calls; `gemini-4-hydrogen` analyzes and `gemini-3.5-flash-lite` localizes the defect.
 - **Ollama** posts to `{base_url}/api/chat` with `format=json`, a 120 s timeout, and a 64 KB
   response cap. It is opt-in (`VISION_PROVIDER=ollama`) and never a silent fallback.
-- **Report path.** `GROQ_TRANSCRIPTION_MODEL` (Whisper) transcribes audio; the report writer
-  defaults to the vision model when `GROQ_REPORT_MODEL` is unset.
+- **Report path.** `GROQ_TRANSCRIPTION_MODEL` (Whisper) transcribes voice notes attached to reports;
+  the report writer defaults to the vision model when `GROQ_REPORT_MODEL` is unset.
+- **Voice-note-only inspection path.** `TRANSCRIPTION_PROVIDER` selects Gemini (default, via
+  `client.files.upload` + `client.interactions.create` on `gemini-3.5-transcribe`, with the uploaded
+  file deleted afterwards) or Groq Whisper. Its transcript is stored on the result without an image.
 - **Validation.** Model output is never trusted: `Finding` bounds confidence to [0, 1], discards
   non-normalized or unordered bounding boxes, and caps `visual_observation` at 240 characters.
   `InspectionReportText` forbids extra fields and cross-checks the voice-note relation: a
@@ -314,7 +319,9 @@ module loggers (never `print`), exception *types* logged but never keys or perso
 | `GROQ_API_KEY` | *(empty)* | Required for Groq vision, report writing, and transcription |
 | `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Vision model |
 | `GROQ_REPORT_MODEL` | `openai/gpt-oss-20b` | Report narrative model |
-| `GROQ_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Voice-note transcription |
+| `GROQ_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Voice notes attached to PDF reports |
+| `TRANSCRIPTION_PROVIDER` | `gemini` | `gemini` or `groq` for voice-note-only inspections |
+| `GEMINI_TRANSCRIPTION_MODEL` | `gemini-3.5-transcribe` | Voice-note-only inspection transcription |
 | `GEMINI_API_KEY` | *(empty)* | Required for the Gemini provider |
 | `GEMINI_VISION_MODEL` | `gemini-4-hydrogen` | Analysis model |
 | `GEMINI_LOCALIZATION_MODEL` | `gemini-3.5-flash-lite` | Second-stage defect box model |
@@ -345,7 +352,7 @@ fallback for routes such as `/categories`. CORS middleware in FastAPI allows the
 
 ## 13. Testing
 
-`uv run pytest --cov=app --cov-report=term-missing` — 104 tests, 87% line coverage.
+`uv run pytest --cov=app --cov-report=term-missing` — 112 tests, 87% line coverage.
 
 - `tests/test_api.py` — route behavior, status-code mapping, pagination, oversized/invalid
   uploads, report routes, an end-to-end happy path through the API with a mocked detector.

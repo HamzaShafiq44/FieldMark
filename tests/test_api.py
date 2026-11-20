@@ -494,6 +494,50 @@ def test_report_route_rejects_oversized_voice_note(monkeypatch: pytest.MonkeyPat
     assert response.status_code == 413
 
 
+def _voice_inspection_result(transcript: str) -> InspectionResult:
+    """Build a voice-only inspection result for route tests."""
+    return InspectionResult(
+        inspection_id="00000000-0000-0000-0000-0000000000aa",
+        produce_type="unknown",
+        detected_item="",
+        item_is_fruit=False,
+        in_inspection_categories=False,
+        verdict="needs_review",
+        confidence=None,
+        bbox=None,
+        defect_types=[],
+        severity=Severity.NONE,
+        grade="Needs manual review",
+        voice_note_transcript=transcript,
+        verdict_notes=[],
+        recommended_action="Add a product photo for a visual grade.",
+    )
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    ["audio/x-m4a", "audio/m4a", "audio/mp4", "application/octet-stream"],
+)
+def test_voice_inspection_accepts_m4a(
+    monkeypatch: pytest.MonkeyPatch, content_type: str
+) -> None:
+    """Accept .m4a uploads regardless of which MIME type the browser reports."""
+    received: list[str] = []
+
+    def fake_inspect(_data: bytes, filename: str) -> InspectionResult:
+        received.append(filename)
+        return _voice_inspection_result("A soft spot on the tomato")
+
+    monkeypatch.setattr(routes_inspection, "inspect_from_voice", fake_inspect)
+    response = client.post(
+        "/inspections/product",
+        files={"voice_note": ("note.m4a", b"audio", content_type)},
+    )
+    assert response.status_code == 200
+    assert received == ["voice-note.m4a"]
+    assert response.json()["voice_note_transcript"] == "A soft spot on the tomato"
+
+
 def test_download_report_returns_404_when_missing() -> None:
     """Return not found when no PDF has been generated for the inspection."""
     response = client.get(

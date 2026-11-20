@@ -24,6 +24,7 @@ from app.services.inspection_service import (
     get_inspection_annotated,
     get_inspection_original,
     get_inspection_thumbnail,
+    inspect_from_voice,
     inspect_produce,
     list_inspection_history,
     relocate_defect,
@@ -48,67 +49,104 @@ ANNOTATED_NOT_FOUND = "No annotated photo is available for this inspection."
 REPORT_NOT_FOUND = "Inspection report not found."
 VOICE_NOTE_TOO_LARGE = "Voice note exceeds the maximum allowed size."
 INVALID_VOICE_NOTE = "Choose a supported audio file for the optional voice note."
-VOICE_NOTE_SUFFIXES = frozenset({".flac", ".m4a", ".mp3", ".mpga", ".ogg", ".wav", ".webm"})
+VOICE_NOTE_SUFFIXES = frozenset(
+    {".flac", ".m4a", ".mp3", ".mp4", ".mpga", ".aac", ".ogg", ".wav", ".webm"}
+)
 VOICE_NOTE_MEDIA_TYPES = frozenset(
     {
+        "audio/aac",
         "audio/flac",
+        "audio/m4a",
+        "audio/mp3",
         "audio/mp4",
         "audio/mpeg",
         "audio/mpga",
         "audio/ogg",
         "audio/wav",
         "audio/webm",
+        "audio/x-aac",
         "audio/x-flac",
         "audio/x-m4a",
         "audio/x-wav",
     }
 )
+# Browsers sometimes leave a known extension without a useful MIME type.
+VOICE_NOTE_GENERIC_MEDIA_TYPES = frozenset({"", "application/octet-stream"})
 
 
 @router.post("/tomato", response_model=InspectionResult, include_in_schema=False)
 @router.post("/produce", response_model=InspectionResult, include_in_schema=False)
 @router.post("/product", response_model=InspectionResult)
 async def inspect_product_route(
-    image: Annotated[UploadFile, File()],
+    image: Annotated[UploadFile | None, File()] = None,
+    voice_note: Annotated[UploadFile | None, File()] = None,
 ) -> InspectionResult:
-    """Analyze an uploaded tomato, apple, banana, or orange image."""
-    LOGGER.info(
-        "Received inspection request: filename='%s', content_type='%s'",
-        image.filename,
-        image.content_type,
-    )
-    data = await image.read(settings.max_image_bytes + 1)
-    if len(data) > settings.max_image_bytes:
-        LOGGER.warning(
-            "Uploaded image exceeds size limit: %d > %d bytes",
-            len(data),
-            settings.max_image_bytes,
-        )
-        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=PAYLOAD_TOO_LARGE)
-    try:
-        result = await run_in_threadpool(inspect_produce, data)
-        LOGGER.info(
-            "Inspection %s succeeded: produce_type='%s', detected='%s', verdict='%s', grade='%s', bbox=%s",
-            result.inspection_id,
-            result.produce_type,
-            result.detected_item,
-            result.verdict,
-            result.grade,
-            result.bbox,
-        )
-        return result
-    except InvalidImageError as exc:
-        LOGGER.warning("Invalid image uploaded: %s", exc)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except InspectionDetectionError as exc:
-        LOGGER.error("Inspection detection failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    except InspectionStorageError as exc:
-        LOGGER.error("Inspection storage failed: %s", exc)
+    """Analyze either an uploaded image **or** a voice note.
+
+    Exactly one of `image` or `voice_note` must be provided.
+    """
+    if (image is None and voice_note is None) or (image is not None and voice_note is not None):
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Inspection completed but could not be saved.",
-        ) from exc
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide either an image or a voice note, not both.",
+        )
+    if image is not None:
+        LOGGER.info(
+            "Received inspection request: filename='%s', content_type='%s'",
+            image.filename,
+            image.content_type,
+        )
+        data = await image.read(settings.max_image_bytes + 1)
+        if len(data) > settings.max_image_bytes:
+            LOGGER.warning(
+                "Uploaded image exceeds size limit: %d > %d bytes",
+                len(data),
+                settings.max_image_bytes,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=PAYLOAD_TOO_LARGE
+            )
+        try:
+            result = await run_in_threadpool(inspect_produce, data)
+            LOGGER.info(
+                "Inspection %s succeeded: produce_type='%s', detected='%s', "
+                "verdict='%s', grade='%s', bbox=%s",
+                result.inspection_id,
+                result.produce_type,
+                result.detected_item,
+                result.verdict,
+                result.grade,
+                result.bbox,
+            )
+            return result
+        except InvalidImageError as exc:
+            LOGGER.warning("Invalid image uploaded: %s", exc)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except InspectionDetectionError as exc:
+            LOGGER.error("Inspection detection failed: %s", exc)
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        except InspectionStorageError as exc:
+            LOGGER.error("Inspection storage failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Inspection completed but could not be saved.",
+            ) from exc
+    else:
+        # Voice note path
+        voice_data, voice_filename = await _read_voice_note(voice_note)
+        if voice_data is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Voice note could not be read."
+            )
+        try:
+            result = await run_in_threadpool(inspect_from_voice, voice_data, voice_filename)
+            return result
+        except InspectionStorageError as exc:
+            LOGGER.error("Inspection storage failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Voice‑note inspection completed but could not be saved.",
+            ) from exc
 
 
 @router.get("/history", response_model=InspectionHistoryResponse)
@@ -267,7 +305,13 @@ async def _read_voice_note(voice_note: UploadFile | None) -> tuple[bytes | None,
     if voice_note is None:
         return None, "voice-note.webm"
     suffix = Path(voice_note.filename or "").suffix.lower()
-    if suffix not in VOICE_NOTE_SUFFIXES or voice_note.content_type not in VOICE_NOTE_MEDIA_TYPES:
+    content_type = (voice_note.content_type or "").split(";")[0].strip().lower()
+    # Accept a known extension with either a supported MIME type or a generic one.
+    # Some browsers report .m4a as audio/x-m4a and others leave the type blank.
+    if suffix not in VOICE_NOTE_SUFFIXES or (
+        content_type not in VOICE_NOTE_MEDIA_TYPES
+        and content_type not in VOICE_NOTE_GENERIC_MEDIA_TYPES
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=INVALID_VOICE_NOTE,

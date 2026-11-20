@@ -136,8 +136,14 @@ pull a vision model such as `qwen2.5vl:7b`, then set `VISION_PROVIDER=ollama`. C
 endpoint and model with `OLLAMA_BASE_URL` and `OLLAMA_VISION_MODEL`. The application does not
 silently switch providers if the selected provider fails.
 
-Note: report writing and voice transcription still use Groq, so a `GROQ_API_KEY` is also required
-for those features regardless of the vision provider.
+## Voice-note transcription
+
+Voice-note-only inspections use `gemini-3.5-transcribe` by default (`TRANSCRIPTION_PROVIDER=gemini`).
+Override the model with `GEMINI_TRANSCRIPTION_MODEL`, or set `TRANSCRIPTION_PROVIDER=groq` to use
+Groq Whisper instead. Voice notes attached to PDF reports always use Groq Whisper
+(`GROQ_TRANSCRIPTION_MODEL`), so a `GROQ_API_KEY` is still required for report writing and those
+voice notes. The Gemini flow uploads the audio before transcribing (two requests) and free-tier
+content may be used to improve Google's products.
 
 ## Inspection history
 

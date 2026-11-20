@@ -63,7 +63,7 @@ SELECT inspection_id, created_at, produce_type, verdict, grade, result_json,
            SELECT 1 FROM inspection_reports
            WHERE inspection_reports.inspection_id = inspections.inspection_id
        ) AS report_available,
-       original_image_path IS NOT NULL AND result_json IS NOT NULL AS report_source_available
+       result_json IS NOT NULL AS report_source_available
 FROM inspections
 ORDER BY created_at DESC, inspection_id DESC
 LIMIT ? OFFSET ?
@@ -126,10 +126,13 @@ class HistoryStorageError(RuntimeError):
 
 @dataclass(frozen=True)
 class InspectionReportSource:
-    """Persisted source image and finding needed to build an inspection report."""
+    """Persisted evidence and finding needed to build an inspection report.
+
+    ``original_image`` is None for voice-only inspections, which have no photo.
+    """
 
     created_at: str
-    original_image: bytes
+    original_image: bytes | None
     result: InspectionResult
 
 
@@ -182,15 +185,30 @@ class InspectionRepository:
             LOGGER.error("Inspection history write failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection history could not be saved.") from exc
 
-    def list_history(self, limit: int, offset: int) -> list[InspectionHistoryItem]:
-        """Return recent inspections in reverse chronological order."""
+    def save_voice_inspection(self, result: InspectionResult) -> None:
+        """Persist a voice‑note‑only inspection result.
+
+        No image files are saved; thumbnail_path and original_image_path are left NULL.
+        """
+        created_at = datetime.now(UTC).isoformat()
         try:
             with self._connection() as connection:
-                rows = connection.execute(SELECT_HISTORY_ITEMS, (limit, offset)).fetchall()
-            return [_history_item(row) for row in rows]
+                connection.execute(
+                    INSERT_HISTORY_ITEM,
+                    (
+                        result.inspection_id,
+                        created_at,
+                        result.produce_type,
+                        result.verdict,
+                        result.grade,
+                        None,  # thumbnail_path
+                        None,  # original_image_path
+                        result.model_dump_json(),
+                    ),
+                )
         except (OSError, sqlite3.Error) as exc:
-            LOGGER.error("Inspection history read failed (%s).", type(exc).__name__)
-            raise HistoryStorageError("Inspection history could not be loaded.") from exc
+            LOGGER.error("Voice‑only inspection history write failed (%s).", type(exc).__name__)
+            raise HistoryStorageError("Inspection history could not be saved.") from exc
 
     def get_thumbnail(self, inspection_id: str) -> bytes | None:
         """Return a stored thumbnail, or None when the inspection does not exist."""
@@ -248,18 +266,26 @@ class InspectionRepository:
             raise HistoryStorageError("Inspection result could not be updated.") from exc
 
     def get_report_source(self, inspection_id: str) -> InspectionReportSource | None:
-        """Return persisted inspection inputs, or None when unavailable."""
+        """Return persisted inspection inputs, or None when unavailable.
+
+        Voice-only inspections have no image path and are still valid report
+        sources. Photo inspections with a missing original file stay unavailable.
+        """
         try:
             with self._connection() as connection:
                 row = connection.execute(SELECT_REPORT_SOURCE, (inspection_id,)).fetchone()
-            if row is None or row["original_image_path"] is None or row["result_json"] is None:
+            if row is None or row["result_json"] is None:
                 return None
-            original_path = _resolve_path(self.database_path.parent, row["original_image_path"])
-            if original_path is None or not original_path.is_file():
-                return None
+            original_image: bytes | None = None
+            stored_path = row["original_image_path"]
+            if stored_path is not None:
+                original_path = _resolve_path(self.database_path.parent, stored_path)
+                if original_path is None or not original_path.is_file():
+                    return None
+                original_image = original_path.read_bytes()
             return InspectionReportSource(
                 created_at=row["created_at"],
-                original_image=original_path.read_bytes(),
+                original_image=original_image,
                 result=InspectionResult.model_validate_json(row["result_json"]),
             )
         except (OSError, sqlite3.Error, ValidationError) as exc:
@@ -293,8 +319,27 @@ class InspectionRepository:
             LOGGER.error("Inspection report write failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection report could not be saved.") from exc
 
+    def list_history(self, limit: int, offset: int) -> list[InspectionHistoryItem]:
+        """Return recent inspections in reverse chronological order.
+
+        Parameters:
+            limit: maximum number of items to return.
+            offset: number of items to skip.
+        """
+        try:
+            with self._connection() as connection:
+                rows = connection.execute(SELECT_HISTORY_ITEMS, (limit, offset)).fetchall()
+            return [_history_item(row) for row in rows]
+        except (OSError, sqlite3.Error) as exc:
+            LOGGER.error("Inspection history read failed (%s).", type(exc).__name__)
+            raise HistoryStorageError("Inspection history could not be loaded.") from exc
+
     def get_report_data(self, inspection_id: str) -> InspectionReportData | None:
-        """Return the stored narrative used to rebuild a report PDF."""
+        """Return the stored narrative used to rebuild a report PDF.
+
+        Parameters:
+            inspection_id: The ID of the inspection.
+        """
         try:
             with self._connection() as connection:
                 row = connection.execute(SELECT_REPORT_DATA, (inspection_id,)).fetchone()
@@ -358,6 +403,7 @@ def _history_item(row: sqlite3.Row) -> InspectionHistoryItem:
         detected_item=result.detected_item if result else "",
         item_is_fruit=result.item_is_fruit if result else False,
         in_inspection_categories=result.in_inspection_categories if result else True,
+        voice_note_transcript=result.voice_note_transcript if result else None,
         verdict=row["verdict"],
         grade=row["grade"],
         thumbnail_url=HISTORY_THUMBNAIL_PATH.format(inspection_id=row["inspection_id"]),

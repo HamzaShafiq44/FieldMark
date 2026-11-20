@@ -14,6 +14,8 @@ import {
   Trash2,
   Upload,
   X,
+  Mic,
+  Square,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react'
 import {
@@ -27,6 +29,7 @@ import {
   inspectionOriginalUrl,
   inspectionThumbnailUrl,
   inspectProduce,
+  inspectVoiceNote,
   listInspectionHistory,
   relocateDefect,
   type ApiStatus,
@@ -34,11 +37,38 @@ import {
   type InspectionResult,
 } from '../services/api'
 import { listCategories, type ProductCategory } from '../services/categories'
+import { prepareRecording } from '../utils/audio'
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const MAX_VOICE_NOTE_BYTES = 25 * 1024 * 1024
 const PDF_URL_REVOKE_DELAY_MS = 1_000
 const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
+const ACCEPTED_VOICE_NOTE_TYPES = new Set([
+  'audio/mpeg',
+  'audio/mp3',
+  'audio/wav',
+  'audio/x-wav',
+  'audio/mp4',
+  'audio/m4a',
+  'audio/x-m4a',
+  'audio/aac',
+  'audio/x-aac',
+  'audio/flac',
+  'audio/x-flac',
+  'audio/webm',
+  'audio/ogg',
+])
+const ACCEPTED_VOICE_NOTE_EXTENSIONS = new Set([
+  'mp3',
+  'mpga',
+  'wav',
+  'mp4',
+  'm4a',
+  'aac',
+  'flac',
+  'webm',
+  'ogg',
+])
 const ACCEPTED_IMAGE_EXTENSIONS = '.jpg, .jpeg, .png, .webp'
 // Hero art is decorative: these are layout slots, not bindings to specific fruits.
 // Reordering or adding categories changes which fruit fills each slot, never the layout.
@@ -212,6 +242,19 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const [isHistoryLoading, setIsHistoryLoading] = useState(true)
   const [isClearingHistory, setIsClearingHistory] = useState(false)
   const [voiceNoteFile, setVoiceNoteFile] = useState<File | null>(null)
+  const [voiceAudioUrl, setVoiceAudioUrl] = useState<string | null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const recordingStartedAtRef = useRef<number | null>(null)
+  const recordingTimerRef = useRef<number | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const micLevelTimerRef = useRef<number | null>(null)
+  const voiceAudioUrlRef = useRef<string | null>(null)
+  const [micLevel, setMicLevel] = useState(0)
+  const [voiceWarning, setVoiceWarning] = useState<string | null>(null)
   const [reportActionId, setReportActionId] = useState<string | null>(null)
   const [reportError, setReportError] = useState<string | null>(null)
   const [relocationId, setRelocationId] = useState<string | null>(null)
@@ -219,13 +262,39 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const [categories, setCategories] = useState<ProductCategory[]>(FALLBACK_CATEGORIES)
   const resultClassification = result ? classifyInspectionResult(result) : null
   const isUnsupportedItem = resultClassification === 'unsupported_item'
+  const isVoiceOnlyResult = Boolean(result?.voice_note_transcript)
   const activeCategories = categories.filter((category) => category.is_active)
   const heroCategories = activeCategories.slice(0, HERO_CARD_SLOTS.length)
   const visibleHistory = history.filter((item) => matchesHistoryFilter(item, historyFilter))
 
+  const stopMicMeter = useCallback(() => {
+    if (micLevelTimerRef.current) {
+      clearInterval(micLevelTimerRef.current)
+      micLevelTimerRef.current = null
+    }
+    analyserRef.current = null
+    const context = audioContextRef.current
+    audioContextRef.current = null
+    if (context && context.state !== 'closed') {
+      void context.close().catch(() => {
+        // Closing an already-closed context is harmless.
+      })
+    }
+    setMicLevel(0)
+  }, [])
+
   useEffect(
     () => () => {
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+      if (voiceAudioUrlRef.current) URL.revokeObjectURL(voiceAudioUrlRef.current)
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
+      if (micLevelTimerRef.current) clearInterval(micLevelTimerRef.current)
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        void audioContextRef.current.close().catch(() => {})
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop()
+      }
     },
     [],
   )
@@ -279,35 +348,224 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
     }
   }, [])
 
-  const selectImage = useCallback((selected: File) => {
-    if (!ACCEPTED_IMAGE_TYPES.has(selected.type)) {
-      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
-      previewUrlRef.current = null
-      setPreviewUrl(null)
-      setFile(null)
-      setResult(null)
-      setError('Choose a JPEG, PNG, or WebP image to continue.')
-      return
+  const updateVoiceAudioUrl = useCallback((audioFile: File | null) => {
+    if (voiceAudioUrlRef.current) {
+      URL.revokeObjectURL(voiceAudioUrlRef.current)
+      voiceAudioUrlRef.current = null
     }
-    if (selected.size > MAX_IMAGE_BYTES) {
-      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
-      previewUrlRef.current = null
-      setPreviewUrl(null)
-      setFile(null)
-      setResult(null)
-      setError('This image is over 10 MB. Choose a smaller file.')
-      return
+    if (audioFile) {
+      const url = URL.createObjectURL(audioFile)
+      voiceAudioUrlRef.current = url
+      setVoiceAudioUrl(url)
+    } else {
+      setVoiceAudioUrl(null)
     }
-    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
-    previewUrlRef.current = URL.createObjectURL(selected)
-    setPreviewUrl(previewUrlRef.current)
-    setFile(selected)
-    setResult(null)
-    setVoiceNoteFile(null)
-    if (voiceNoteInput.current) voiceNoteInput.current.value = ''
-    setReportError(null)
-    setError(null)
   }, [])
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
+    stopMicMeter()
+    setIsRecording(false)
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+  }, [stopMicMeter])
+
+  const startRecording = useCallback(async () => {
+    if (isLoading || isRecording) return
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError('Audio recording is not supported in this browser.')
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+
+      // Live input meter so the user can see whether the browser hears them.
+      const AudioContextClass =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      if (AudioContextClass) {
+        const audioContext = new AudioContextClass()
+        audioContextRef.current = audioContext
+        void audioContext.resume().catch(() => {
+          // Some browsers start suspended; the meter still updates once unlocked.
+        })
+        const source = audioContext.createMediaStreamSource(stream)
+        const analyser = audioContext.createAnalyser()
+        analyser.fftSize = 1024
+        source.connect(analyser)
+        analyserRef.current = analyser
+        const data = new Uint8Array(analyser.fftSize)
+        setMicLevel(0)
+        if (micLevelTimerRef.current) clearInterval(micLevelTimerRef.current)
+        micLevelTimerRef.current = window.setInterval(() => {
+          analyser.getByteTimeDomainData(data)
+          let peak = 0
+          for (let index = 0; index < data.length; index += 1) {
+            const amplitude = Math.abs(data[index] - 128) / 128
+            if (amplitude > peak) peak = amplitude
+          }
+          setMicLevel(peak)
+        }, 100)
+      }
+
+      let chosenMimeType = 'audio/webm'
+      let extension = 'webm'
+      if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('audio/webm')) {
+          chosenMimeType = 'audio/webm'
+          extension = 'webm'
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          chosenMimeType = 'audio/mp4'
+          extension = 'm4a'
+        } else if (MediaRecorder.isTypeSupported('audio/ogg')) {
+          chosenMimeType = 'audio/ogg'
+          extension = 'ogg'
+        } else if (MediaRecorder.isTypeSupported('audio/wav')) {
+          chosenMimeType = 'audio/wav'
+          extension = 'wav'
+        }
+      }
+
+      const recorder = new MediaRecorder(
+        stream,
+        chosenMimeType ? { mimeType: chosenMimeType } : undefined,
+      )
+      mediaRecorderRef.current = recorder
+      audioChunksRef.current = []
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop())
+        stopMicMeter()
+
+        const durationMs =
+          recordingStartedAtRef.current === null ? 0 : Date.now() - recordingStartedAtRef.current
+        recordingStartedAtRef.current = null
+
+        const blobType = chosenMimeType
+        const audioBlob = new Blob(audioChunksRef.current, { type: blobType })
+        console.info('[voice-note] recording captured', {
+          durationMs,
+          bytes: audioBlob.size,
+          mimeType: blobType,
+        })
+
+        // Reject only genuinely empty recordings; real speech in compressed
+        // WebM can be just a few KB, so a hard size floor caused false rejections.
+        if (durationMs < 500 || audioBlob.size < 512) {
+          setError('No audio captured. Check your microphone, speak clearly, and try again.')
+          return
+        }
+
+        if (audioBlob.size > MAX_VOICE_NOTE_BYTES) {
+          setError('Recorded audio exceeds the 25 MB limit.')
+          return
+        }
+
+        // Decode to WAV. A low peak is a warning, not a block: the transcription
+        // service is the final judge of whether the recording contains speech.
+        void prepareRecording(audioBlob)
+          .then(({ blob, hasSpeech, peak }) => {
+            console.info('[voice-note] audio prepared', {
+              peak,
+              hasSpeech,
+              bytes: blob.size,
+              mimeType: blob.type,
+            })
+            const isWav = blob.type === 'audio/wav'
+            const recordedFile = new File(
+              [blob],
+              `voice-recording-${Date.now()}.${isWav ? 'wav' : extension}`,
+              { type: blob.type || blobType },
+            )
+
+            if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+            previewUrlRef.current = null
+            setPreviewUrl(null)
+            setFile(null)
+            setResult(null)
+            setReportError(null)
+            setError(null)
+
+            setVoiceNoteFile(recordedFile)
+            updateVoiceAudioUrl(recordedFile)
+            setVoiceWarning(
+              hasSpeech
+                ? null
+                : 'The recording sounded very quiet. If the transcript is empty, check your microphone input and try again.',
+            )
+          })
+          .catch(() => {
+            setError('Could not process the recording. Please try again.')
+          })
+      }
+
+      recorder.start(250)
+      setIsRecording(true)
+      setRecordingSeconds(0)
+      setVoiceWarning(null)
+      setError(null)
+
+      const startTime = Date.now()
+      recordingStartedAtRef.current = startTime
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = window.setInterval(() => {
+        setRecordingSeconds(Math.floor((Date.now() - startTime) / 1000))
+      }, 500)
+    } catch (caught: unknown) {
+      setIsRecording(false)
+      stopMicMeter()
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
+      const message = caught instanceof Error ? caught.message : 'Microphone access denied.'
+      setError(`Microphone error: ${message}`)
+    }
+  }, [isLoading, isRecording, updateVoiceAudioUrl, stopMicMeter])
+
+  const selectImage = useCallback(
+    (selected: File) => {
+      if (!ACCEPTED_IMAGE_TYPES.has(selected.type)) {
+        if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+        previewUrlRef.current = null
+        setPreviewUrl(null)
+        setFile(null)
+        setResult(null)
+        setError('Choose a JPEG, PNG, or WebP image to continue.')
+        return
+      }
+      if (selected.size > MAX_IMAGE_BYTES) {
+        if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+        previewUrlRef.current = null
+        setPreviewUrl(null)
+        setFile(null)
+        setResult(null)
+        setError('This image is over 10 MB. Choose a smaller file.')
+        return
+      }
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+      previewUrlRef.current = URL.createObjectURL(selected)
+      setPreviewUrl(previewUrlRef.current)
+      setFile(selected)
+      setResult(null)
+      if (isRecording) stopRecording()
+      setVoiceNoteFile(null)
+      updateVoiceAudioUrl(null)
+      setVoiceWarning(null)
+      if (voiceNoteInput.current) voiceNoteInput.current.value = ''
+      setReportError(null)
+      setError(null)
+    },
+    [isRecording, stopRecording, updateVoiceAudioUrl],
+  )
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = event.currentTarget.files?.[0]
@@ -322,17 +580,60 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
     if (droppedFile) selectImage(droppedFile)
   }
 
+  const handleVoiceNoteChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.currentTarget.files?.[0]
+    if (!selected) return
+    const extension = selected.name.split('.').pop()?.toLowerCase() ?? ''
+    // Some browsers report .m4a as audio/x-m4a or leave the type blank, so
+    // fall back to the extension before rejecting a valid file.
+    if (
+      !ACCEPTED_VOICE_NOTE_TYPES.has(selected.type) &&
+      !ACCEPTED_VOICE_NOTE_EXTENSIONS.has(extension)
+    ) {
+      setError('Choose an audio file (MP3, M4A, WAV, MP4, FLAC, WebM, OGG).')
+      event.currentTarget.value = ''
+      return
+    }
+    if (selected.size > MAX_VOICE_NOTE_BYTES) {
+      setError('This audio file is over 25 MB. Choose a smaller file.')
+      event.currentTarget.value = ''
+      return
+    }
+    if (isRecording) stopRecording()
+    // Clear image state
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+    previewUrlRef.current = null
+    setPreviewUrl(null)
+    setFile(null)
+    setResult(null)
+    setReportError(null)
+    setError(null)
+    setVoiceNoteFile(selected)
+    updateVoiceAudioUrl(selected)
+    setVoiceWarning(null)
+    event.currentTarget.value = ''
+  }
+
+  const clearVoiceNote = () => {
+    if (isRecording) stopRecording()
+    setVoiceNoteFile(null)
+    updateVoiceAudioUrl(null)
+    setVoiceWarning(null)
+    if (voiceNoteInput.current) voiceNoteInput.current.value = ''
+    setError(null)
+  }
+
   const handleInspect = async () => {
-    if (!file || isLoading) return
+    if ((!file && !voiceNoteFile) || isLoading) return
 
     setIsLoading(true)
     setError(null)
     setResult(null)
-    setVoiceNoteFile(null)
-    if (voiceNoteInput.current) voiceNoteInput.current.value = ''
     setReportError(null)
     try {
-      const inspection = await inspectProduce(file)
+      const inspection = voiceNoteFile
+        ? await inspectVoiceNote(voiceNoteFile)
+        : await inspectProduce(file!)
       setResult(inspection)
       onApiStatusChange('connected')
       void refreshHistory()
@@ -360,7 +661,9 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
     setPreviewUrl(null)
     setFile(null)
     setResult(null)
+    if (isRecording) stopRecording()
     setVoiceNoteFile(null)
+    updateVoiceAudioUrl(null)
     if (voiceNoteInput.current) voiceNoteInput.current.value = ''
     setReportError(null)
     setError(null)
@@ -438,7 +741,9 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
       await clearInspectionHistory()
       setHistory([])
       setResult(null)
+      if (isRecording) stopRecording()
       setVoiceNoteFile(null)
+      updateVoiceAudioUrl(null)
       if (voiceNoteInput.current) voiceNoteInput.current.value = ''
     } catch (caught: unknown) {
       setHistoryError(
@@ -602,7 +907,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
             className="inspect-button"
             type="button"
             onClick={handleInspect}
-            disabled={!file || isLoading}
+            disabled={!(file || voiceNoteFile) || isLoading}
           >
             {isLoading ? (
               <>
@@ -619,6 +924,154 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
           </p>
           <p className="upload-retention-note">
             Original photos are stored with inspection history so PDF reports can include them.
+          </p>
+        </section>
+
+        <section className="panel voice-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="section-kicker">
+                01b <span>/</span> VOICE NOTE INPUT
+              </p>
+              <h2>Or record / upload a voice note</h2>
+              <p className="panel-subtitle">Record your voice directly or upload an audio file.</p>
+            </div>
+            <span className="heading-icon">
+              <Mic size={19} />
+            </span>
+          </div>
+
+          <div className="voice-record-card">
+            <div className="voice-record-status">
+              {isRecording ? (
+                <div className="recording-indicator">
+                  <span className="recording-pulse" />
+                  <strong>Recording voice note…</strong>
+                  <span className="recording-timer">
+                    {Math.floor(recordingSeconds / 60)
+                      .toString()
+                      .padStart(2, '0')}
+                    :{(recordingSeconds % 60).toString().padStart(2, '0')}
+                  </span>
+                </div>
+              ) : (
+                <span className="capture-note">
+                  {voiceNoteFile
+                    ? 'Voice note ready for inspection'
+                    : 'Speak directly about product quality or defects'}
+                </span>
+              )}
+            </div>
+
+            <div className="record-actions">
+              {isRecording ? (
+                <button
+                  className="camera-button recording-btn active"
+                  type="button"
+                  onClick={stopRecording}
+                >
+                  <Square size={16} /> Stop recording
+                </button>
+              ) : (
+                <button
+                  className="camera-button recording-btn"
+                  type="button"
+                  onClick={startRecording}
+                  disabled={isLoading}
+                >
+                  <Mic size={16} /> Record in browser
+                </button>
+              )}
+            </div>
+
+            {isRecording && (
+              <div className="mic-level" role="status" aria-label="Microphone input level">
+                <span className="mic-level-label">Mic level</span>
+                <span className="mic-level-track">
+                  <span
+                    className={`mic-level-fill ${micLevel > 0.05 ? 'is-live' : ''}`}
+                    style={{ width: `${Math.min(100, Math.round(micLevel * 400))}%` }}
+                  />
+                </span>
+              </div>
+            )}
+          </div>
+
+          <label className="upload-zone voice-upload-zone" htmlFor="voice-note-file">
+            <input
+              id="voice-note-file"
+              className="visually-hidden"
+              ref={voiceNoteInput}
+              type="file"
+              accept="audio/*"
+              onChange={handleVoiceNoteChange}
+            />
+            <div className="upload-prompt">
+              <span className="upload-icon">
+                <Mic size={23} />
+              </span>
+              <span className="upload-title">Drop an audio file here</span>
+              <span className="upload-subtitle">
+                or <strong>browse audio files</strong> on your device
+              </span>
+              <span className="upload-formats">
+                MP3 · M4A · WAV · MP4 · FLAC · WEBM · OGG <i /> UP TO 25 MB
+              </span>
+            </div>
+          </label>
+
+          {voiceNoteFile && (
+            <div className="file-row">
+              <span className="file-icon">
+                <Mic size={17} />
+              </span>
+              <span className="file-info">
+                <strong>{voiceNoteFile.name}</strong>
+                <small>{formatFileSize(voiceNoteFile.size)}</small>
+                {voiceAudioUrl && (
+                  <audio
+                    className="audio-preview-player"
+                    controls
+                    src={voiceAudioUrl}
+                    style={{ marginTop: '8px', width: '100%', maxWidth: '280px', height: '34px' }}
+                  />
+                )}
+              </span>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={clearVoiceNote}
+                aria-label="Remove voice note"
+              >
+                <X size={17} />
+              </button>
+            </div>
+          )}
+
+          {voiceWarning && (
+            <p className="voice-warning" role="status">
+              {voiceWarning}
+            </p>
+          )}
+
+          <button
+            className="inspect-button"
+            type="button"
+            onClick={handleInspect}
+            disabled={!voiceNoteFile || isLoading || isRecording}
+          >
+            {isLoading && voiceNoteFile ? (
+              <>
+                <LoaderCircle className="spin" size={18} /> Analyzing voice note
+              </>
+            ) : (
+              <>
+                Inspect voice note <ArrowRight size={18} />
+              </>
+            )}
+          </button>
+          <p className="button-caption">
+            <Sparkles size={13} /> Grades the product you describe · no photo needed
           </p>
         </section>
 
@@ -655,7 +1108,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                 type="button"
                 className="retry-button"
                 onClick={handleInspect}
-                disabled={!file || isLoading}
+                disabled={!(file || voiceNoteFile) || isLoading}
               >
                 Try again <RefreshCw size={15} />
               </button>
@@ -666,13 +1119,31 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                 <ScanLine size={30} />
               </span>
               <h3>Looking a little closer…</h3>
-              <p>Checking visible signs and estimating a quality grade.</p>
+              <p>
+                {voiceNoteFile
+                  ? 'Reading what you said and estimating a quality grade.'
+                  : 'Checking visible signs and estimating a quality grade.'}
+              </p>
               <div className="loading-track">
                 <span />
               </div>
             </div>
           ) : result ? (
             <div className="result-content">
+              {isVoiceOnlyResult && (
+                <div className="voice-result-intro">
+                  <span className="voice-result-icon">
+                    <Mic size={22} />
+                  </span>
+                  <span>
+                    <strong>Graded from your voice note</strong>
+                    <small>
+                      This grade is based on what you said, not a photo. Inspect the product
+                      manually before acting.
+                    </small>
+                  </span>
+                </div>
+              )}
               <div className="grade-row">
                 {!isUnsupportedItem && (
                   <div className="grade-block">
@@ -707,60 +1178,64 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                 </p>
               )}
 
-              <section className="photo-evidence" aria-label="Photo evidence">
-                <div className="photo-evidence-heading">
-                  <span className="result-label">PHOTO EVIDENCE</span>
-                  {result.bbox && <span>Reported defect area marked</span>}
-                </div>
-                <div className={`photo-evidence-grid ${result.bbox ? 'has-annotated' : ''}`}>
-                  <figure className="photo-figure">
-                    <img
-                      src={previewUrl ?? inspectionOriginalUrl(result.inspection_id)}
-                      alt="Original uploaded product photo"
-                    />
-                    <figcaption>Original photo</figcaption>
-                  </figure>
-                  {result.bbox && (
+              {!isVoiceOnlyResult && (
+                <section className="photo-evidence" aria-label="Photo evidence">
+                  <div className="photo-evidence-heading">
+                    <span className="result-label">PHOTO EVIDENCE</span>
+                    {result.bbox && <span>Reported defect area marked</span>}
+                  </div>
+                  <div className={`photo-evidence-grid ${result.bbox ? 'has-annotated' : ''}`}>
                     <figure className="photo-figure">
                       <img
-                        src={inspectionAnnotatedUrl(result.inspection_id)}
-                        alt="Product photo with the reported defect area marked"
+                        src={previewUrl ?? inspectionOriginalUrl(result.inspection_id)}
+                        alt="Original uploaded product photo"
                       />
-                      <figcaption>Reported defect area</figcaption>
+                      <figcaption>Original photo</figcaption>
                     </figure>
-                  )}
-                </div>
-                {!result.bbox &&
-                  !isUnsupportedItem &&
-                  (result.defect_types.length > 0 || result.grade === 'Reject') && (
-                    <div className="relocate-action">
-                      <button
-                        className="history-report-button"
-                        type="button"
-                        onClick={() => void handleRelocateDefect(result.inspection_id)}
-                        disabled={relocationId !== null}
-                      >
-                        {relocationId === result.inspection_id ? (
-                          <LoaderCircle className="spin" size={14} />
-                        ) : (
-                          <ScanLine size={14} />
+                    {result.bbox && (
+                      <figure className="photo-figure">
+                        <img
+                          src={inspectionAnnotatedUrl(result.inspection_id)}
+                          alt="Product photo with the reported defect area marked"
+                        />
+                        <figcaption>Reported defect area</figcaption>
+                      </figure>
+                    )}
+                  </div>
+                  {!result.bbox &&
+                    !isUnsupportedItem &&
+                    (result.defect_types.length > 0 || result.grade === 'Reject') && (
+                      <div className="relocate-action">
+                        <button
+                          className="history-report-button"
+                          type="button"
+                          onClick={() => void handleRelocateDefect(result.inspection_id)}
+                          disabled={relocationId !== null}
+                        >
+                          {relocationId === result.inspection_id ? (
+                            <LoaderCircle className="spin" size={14} />
+                          ) : (
+                            <ScanLine size={14} />
+                          )}
+                          Find defect area
+                        </button>
+                        {relocationError && (
+                          <p className="report-error" role="alert">
+                            {relocationError}
+                          </p>
                         )}
-                        Find defect area
-                      </button>
-                      {relocationError && (
-                        <p className="report-error" role="alert">
-                          {relocationError}
-                        </p>
-                      )}
-                    </div>
-                  )}
-              </section>
+                      </div>
+                    )}
+                </section>
+              )}
 
               {!isUnsupportedItem && (
                 <>
                   <div className="details-grid">
                     <div className="detail-cell">
-                      <span className="result-label">VISIBLE DEFECTS</span>
+                      <span className="result-label">
+                        {isVoiceOnlyResult ? 'REPORTED DEFECTS' : 'VISIBLE DEFECTS'}
+                      </span>
                       {result.defect_types.length ? (
                         <div className="defect-tags">
                           {result.defect_types.map((defect) => (
@@ -771,7 +1246,8 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                         </div>
                       ) : (
                         <strong className="detail-value">
-                          <Check size={15} /> No visible defects
+                          <Check size={15} /> No {isVoiceOnlyResult ? 'reported' : 'visible'}{' '}
+                          defects
                         </strong>
                       )}
                     </div>
@@ -803,6 +1279,12 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                   </div>
                 </>
               )}
+              {result.voice_note_transcript && (
+                <section className="transcript-section" aria-label="Voice note transcript">
+                  <span className="result-label">VOICE NOTE TRANSCRIPT</span>
+                  <p className="transcript-text">“{result.voice_note_transcript}”</p>
+                </section>
+              )}
               <p className="result-disclaimer">{result.disclaimer}</p>
               <p className="inspection-id">
                 INSPECTION {result.inspection_id.slice(0, 8).toUpperCase()}
@@ -814,7 +1296,9 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                     {isUnsupportedItem
                       ? 'This item is outside the inspection categories, so no PDF report was created.'
                       : result.report_available
-                        ? 'Your PDF is ready. Add a short voice note to update it with spoken context.'
+                        ? isVoiceOnlyResult
+                          ? 'Your PDF is ready with the grade and transcript from your voice note.'
+                          : 'Your PDF is ready. Add a short voice note to update it with spoken context.'
                         : 'The PDF could not be created for this inspection.'}
                   </p>
                 </div>
@@ -836,28 +1320,34 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                         </>
                       )}
                     </button>
-                    <label>
-                      Add a voice note to update the report
-                      <input
-                        ref={voiceNoteInput}
-                        type="file"
-                        accept="audio/*"
-                        onChange={(event) => {
-                          const selected = event.currentTarget.files?.[0] ?? null
-                          setReportError(null)
-                          if (!selected) return
-                          if (selected.size > MAX_VOICE_NOTE_BYTES) {
-                            setVoiceNoteFile(null)
-                            setReportError('Voice note is over 25 MB. Choose a smaller audio file.')
-                            event.currentTarget.value = ''
-                            return
-                          }
-                          setVoiceNoteFile(selected)
-                          void handleUpdateReportWithVoiceNote(result.inspection_id, selected)
-                        }}
-                      />
-                    </label>
-                    {voiceNoteFile && <p className="report-file-name">{voiceNoteFile.name}</p>}
+                    {!isVoiceOnlyResult && (
+                      <>
+                        <label>
+                          Add a voice note to update the report
+                          <input
+                            ref={voiceNoteInput}
+                            type="file"
+                            accept="audio/*"
+                            onChange={(event) => {
+                              const selected = event.currentTarget.files?.[0] ?? null
+                              setReportError(null)
+                              if (!selected) return
+                              if (selected.size > MAX_VOICE_NOTE_BYTES) {
+                                setVoiceNoteFile(null)
+                                setReportError(
+                                  'Voice note is over 25 MB. Choose a smaller audio file.',
+                                )
+                                event.currentTarget.value = ''
+                                return
+                              }
+                              setVoiceNoteFile(selected)
+                              void handleUpdateReportWithVoiceNote(result.inspection_id, selected)
+                            }}
+                          />
+                        </label>
+                        {voiceNoteFile && <p className="report-file-name">{voiceNoteFile.name}</p>}
+                      </>
+                    )}
                   </>
                 )}
                 {!result.report_available && (
@@ -976,11 +1466,20 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
               const unsupported = classification === 'unsupported_item'
               return (
                 <article className="history-item" key={item.inspection_id}>
-                  <img
-                    className="history-thumbnail"
-                    src={inspectionThumbnailUrl(item.inspection_id)}
-                    alt={`${productName(item, categories)} inspection`}
-                  />
+                  {item.voice_note_transcript ? (
+                    <span
+                      className="history-thumbnail history-voice-thumbnail"
+                      aria-label="Voice note inspection"
+                    >
+                      <Mic size={22} />
+                    </span>
+                  ) : (
+                    <img
+                      className="history-thumbnail"
+                      src={inspectionThumbnailUrl(item.inspection_id)}
+                      alt={`${productName(item, categories)} inspection`}
+                    />
+                  )}
                   <div className="history-item-copy">
                     <strong>{productName(item, categories)}</strong>
                     <span>{formatInspectionDate(item.created_at)}</span>

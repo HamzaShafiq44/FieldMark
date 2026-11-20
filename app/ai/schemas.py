@@ -144,6 +144,7 @@ class InspectionResult(BaseModel):
     defect_types: list[DefectType]
     severity: Severity
     grade: Grade
+    voice_note_transcript: str | None = None
     verdict_notes: list[str]
     recommended_action: str
     disclaimer: str = DEFAULT_DISCLAIMER
@@ -161,6 +162,7 @@ class InspectionHistoryItem(BaseModel):
     in_inspection_categories: bool = True
     verdict: Verdict
     grade: Grade
+    voice_note_transcript: str | None = None
     thumbnail_url: str
     report_available: bool = False
     report_source_available: bool = False

@@ -46,11 +46,15 @@ class InspectionReportAIError(InspectionReportError):
 def generate_automatic_report(inspection_id: str) -> bool:
     """Persist the default report narrative, falling back to deterministic text.
 
+    Voice-only inspections reuse their stored transcript as report evidence.
     Returns True when report data was saved. AI or rendering failures never fail
     the inspection itself; the interface then shows the report as unavailable.
     """
     try:
-        generate_inspection_report(inspection_id, ReportUserType.FARMER)
+        repository = InspectionRepository(settings.inspection_db_path)
+        source = _load_report_source(repository, inspection_id)
+        transcript = source.result.voice_note_transcript or None
+        generate_inspection_report(inspection_id, ReportUserType.FARMER, transcript=transcript)
         return True
     except InspectionReportError as exc:
         LOGGER.warning(
@@ -95,7 +99,11 @@ def _deterministic_report_text(result: InspectionResult) -> InspectionReportText
     summary = f"{product}: grade {result.grade}, verdict {verdict}."
     findings = [_shorten(note, 180) for note in result.verdict_notes if note.strip()][:3]
     if not findings:
-        findings = ["The visual inspection completed without additional notes."]
+        findings = [
+            "The spoken description was recorded without additional notes."
+            if result.voice_note_transcript
+            else "The visual inspection completed without additional notes."
+        ]
     recommendations = [
         item
         for item in dict.fromkeys(
@@ -125,11 +133,22 @@ def generate_inspection_report(
     user_type: ReportUserType,
     voice_note: bytes | None = None,
     voice_note_filename: str = "voice-note.webm",
+    transcript: str | None = None,
 ) -> bytes:
-    """Generate a PDF, persist its narrative, and return the PDF bytes."""
+    """Generate a PDF, persist its narrative, and return the PDF bytes.
+
+    A transcript already stored on a voice-only inspection can be supplied
+    directly instead of re-transcribing the original audio.
+    """
     repository = InspectionRepository(settings.inspection_db_path)
     source = _load_report_source(repository, inspection_id)
-    transcript = _transcribe(voice_note, voice_note_filename)
+    if transcript is not None:
+        transcript = _bound_transcript(transcript)
+    elif voice_note is not None:
+        transcript = _transcribe(voice_note, voice_note_filename)
+    else:
+        # Voice-only inspections carry their evidence on the stored result.
+        transcript = _bound_transcript(source.result.voice_note_transcript or "")
     report_text = _write_report(source.result, user_type, transcript)
     report_id = str(uuid4())
     pdf = _render_report(report_id, source, user_type, report_text, transcript)
@@ -195,6 +214,15 @@ def _render_report(
         raise InspectionReportError("Inspection PDF could not be rendered.") from exc
 
 
+def _bound_transcript(transcript: str) -> str:
+    """Reject transcripts too long for a one-page report."""
+    if len(transcript) > MAX_TRANSCRIPT_CHARACTERS:
+        raise InspectionReportInputError(
+            "Voice note is too long for the one-page report. Please use a shorter voice note."
+        )
+    return transcript
+
+
 def _transcribe(voice_note: bytes | None, filename: str) -> str:
     """Transcribe optional audio and bound the text sent to the report model."""
     if voice_note is None:
@@ -203,11 +231,7 @@ def _transcribe(voice_note: bytes | None, filename: str) -> str:
         transcript = transcribe_voice_note(voice_note, filename)
     except ReportAIError as exc:
         raise InspectionReportAIError(str(exc)) from exc
-    if len(transcript) > MAX_TRANSCRIPT_CHARACTERS:
-        raise InspectionReportInputError(
-            "Voice note is too long for the one-page report. Please use a shorter voice note."
-        )
-    return transcript
+    return _bound_transcript(transcript)
 
 
 def _write_report(

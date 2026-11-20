@@ -305,7 +305,7 @@ def build_inspection_pdf(
     result: InspectionResult,
     report_text: InspectionReportText,
     transcript: str,
-    original_image: bytes,
+    original_image: bytes | None,
 ) -> bytes:
     """Render a validated inspection narrative, evidence, and annotated images as a PDF."""
     buffer = BytesIO()
@@ -398,7 +398,7 @@ def _story(
     result: InspectionResult,
     report_text: InspectionReportText,
     transcript: str,
-    original_image: bytes,
+    original_image: bytes | None,
 ) -> list[Flowable]:
     """Assemble all PDF sections in reading order."""
     story: list[Flowable] = [
@@ -416,11 +416,21 @@ def _story(
             _section_band(styles, "NEXT STEP", result.recommended_action, PALE_GREEN, LEAF),
         )
     )
-    story.extend((Spacer(1, 10), _section_heading(styles, "Photo evidence")))
-    story.append(_photo_table(styles, original_image, result))
+    if original_image is None:
+        # Voice-only inspections have no photo; the transcript is the evidence.
+        story.append(Spacer(1, 2))
+    else:
+        story.extend((Spacer(1, 10), _section_heading(styles, "Photo evidence")))
+        story.append(_photo_table(styles, original_image, result))
     story.extend((Spacer(1, 10), _section_heading(styles, "Inspection findings")))
     story.extend(_bullet_paragraph(finding, styles["bullet"]) for finding in report_text.findings)
-    _append_voice_note(story, styles, transcript, report_text)
+    _append_voice_note(
+        story,
+        styles,
+        transcript,
+        report_text,
+        max_chars=360 if original_image is None else 120,
+    )
     story.extend((Spacer(1, 6), _paragraph(result.disclaimer, styles["small"])))
     return story
 
@@ -541,11 +551,12 @@ def _append_voice_note(
     styles: dict[str, ParagraphStyle],
     transcript: str,
     report_text: InspectionReportText,
+    *,
+    max_chars: int = 120,
 ) -> None:
     """Include a compact voice-note chip and optional conflict note."""
     if not transcript:
         return
-    max_chars = 120
     if len(transcript) <= max_chars:
         display = transcript
     else:

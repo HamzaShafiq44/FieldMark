@@ -601,3 +601,47 @@ def test_non_edible_item_gets_no_report(monkeypatch: pytest.MonkeyPatch) -> None
     assert result.report_available is False
     repository = InspectionRepository(settings.inspection_db_path)
     assert repository.get_report_data(result.inspection_id) is None
+
+
+def test_voice_only_report_renders_and_rebuilds_without_photo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A voice-only inspection gets a downloadable, rebuildable one-page PDF."""
+    monkeypatch.setattr(settings, "groq_api_key", SecretStr("report-test-key"))
+    monkeypatch.setattr(settings, "groq_report_model", "")
+    response = Mock()
+    response.choices = [
+        Mock(
+            message=Mock(
+                content=json.dumps(
+                    {
+                        "summary": "The speaker reported a rotten apple.",
+                        "findings": ["A rotten apple was described."],
+                        "recommendations": ["Separate the apple from the batch."],
+                        "voice_note_relation": "supports",
+                        "voice_note_conflict": "",
+                    }
+                )
+            )
+        )
+    ]
+    client = Mock()
+    client.chat.completions.create.return_value = response
+    with patch(
+        "app.ai.transcription.transcribe_voice_note", return_value="My apple is rotten."
+    ):
+        result = inspection_service.inspect_from_voice(b"audio", "note.m4a")
+
+    with patch("app.ai.groq_report.Groq", return_value=client):
+        pdf = report_service.generate_inspection_report(
+            result.inspection_id, ReportUserType.FARMER
+        )
+    assert pdf.startswith(b"%PDF")
+    rebuilt = report_service.get_inspection_report(result.inspection_id)
+    assert rebuilt is not None
+    assert rebuilt.startswith(b"%PDF")
+
+    history = InspectionRepository(settings.inspection_db_path).list_history(1, 0)[0]
+    assert history.report_available is True
+    assert history.report_source_available is True
+    assert history.voice_note_transcript == "My apple is rotten."

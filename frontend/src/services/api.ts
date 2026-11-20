@@ -24,6 +24,8 @@ export interface InspectionResult {
   recommended_action: string
   disclaimer: string
   report_available: boolean
+  // Optional transcript when a voice note is provided
+  voice_note_transcript?: string
 }
 
 export interface InspectionHistoryItem {
@@ -38,6 +40,7 @@ export interface InspectionHistoryItem {
   thumbnail_url: string
   report_available: boolean
   report_source_available: boolean
+  voice_note_transcript?: string
 }
 
 /** Result classification shown by the interface. */
@@ -54,9 +57,14 @@ export function classifyInspectionResult(item: {
   detected_item?: string
   item_is_fruit?: boolean
   in_inspection_categories?: boolean
+  voice_note_transcript?: string
 }): ResultClassification {
   if (item.in_inspection_categories ?? item.produce_type !== 'unknown') return 'supported'
-  return item.item_is_fruit ? 'out_of_categories' : 'unsupported_item'
+  if (item.item_is_fruit) return 'out_of_categories'
+  // A voice note with no identified product is a manual-review record, not an
+  // unsupported physical item.
+  if (item.voice_note_transcript && !item.detected_item?.trim()) return 'supported'
+  return 'unsupported_item'
 }
 
 export class ApiError extends Error {
@@ -78,6 +86,27 @@ export function apiUrl(path: string): string {
 export async function checkApiHealth(): Promise<boolean> {
   const response = await fetch(apiUrl('/health'))
   return response.ok
+}
+
+export async function inspectVoiceNote(file: File): Promise<InspectionResult> {
+  const formData = new FormData()
+  formData.append('voice_note', file)
+
+  const response = await fetch(apiUrl('/inspections/product'), {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    const body = (await response.json()) as { detail?: unknown }
+    const message =
+      typeof body.detail === 'string'
+        ? body.detail
+        : `Inspection failed with status ${response.status}.`
+    throw new ApiError(message, response.status)
+  }
+
+  return (await response.json()) as InspectionResult
 }
 
 export async function inspectProduce(file: File): Promise<InspectionResult> {
@@ -109,7 +138,6 @@ export async function listInspectionHistory(): Promise<InspectionHistoryItem[]> 
       response.status,
     )
   }
-
   const body = (await response.json()) as { items?: unknown }
   if (!Array.isArray(body.items)) {
     throw new Error('The API returned an invalid inspection history response.')

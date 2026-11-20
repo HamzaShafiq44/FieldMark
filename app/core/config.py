@@ -14,6 +14,7 @@ DEFAULT_GROQ_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
 DEFAULT_GEMINI_VISION_MODEL = "gemini-4-hydrogen"
 DEFAULT_GEMINI_LOCALIZATION_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_GEMINI_FALLBACK_MODELS = "gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite"
+DEFAULT_GEMINI_TRANSCRIPTION_MODEL = "gemini-3.5-transcribe"
 DEFAULT_OLLAMA_VISION_MODEL = "qwen2.5vl:7b"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_URL_SCHEMES = frozenset({"http", "https"})
@@ -39,6 +40,8 @@ class Settings(BaseSettings):
     gemini_vision_model: str = DEFAULT_GEMINI_VISION_MODEL
     gemini_localization_model: str = DEFAULT_GEMINI_LOCALIZATION_MODEL
     gemini_fallback_models: str = DEFAULT_GEMINI_FALLBACK_MODELS
+    transcription_provider: Literal["groq", "gemini"] = "gemini"
+    gemini_transcription_model: str = DEFAULT_GEMINI_TRANSCRIPTION_MODEL
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
     ollama_vision_model: str = DEFAULT_OLLAMA_VISION_MODEL
     inspection_db_path: Path = DEFAULT_INSPECTION_DB_PATH

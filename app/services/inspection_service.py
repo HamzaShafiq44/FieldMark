@@ -7,10 +7,10 @@ from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
 
-from app.ai.prompts import DEFAULT_SUPPORTED_TYPES
 from app.ai.provider_factory import create_vision_detector
 from app.ai.providers import DetectionError, VisionDetector
 from app.ai.schemas import (
+    DEFAULT_DISCLAIMER,
     BBox,
     Condition,
     DefectType,
@@ -24,7 +24,7 @@ from app.ai.schemas import (
 )
 from app.core.config import settings
 from app.reports.pdf_renderer import annotate_photo
-from app.services.category_service import CategoryError, list_active_category_slugs
+from app.services.category_service import list_active_category_slugs
 from app.services.report_service import generate_automatic_report
 from app.storage.inspection_repository import HistoryStorageError, InspectionRepository
 
@@ -256,6 +256,8 @@ def relocate_defect(inspection_id: str) -> InspectionResult:
         raise RelocationStorageError("Inspection source could not be loaded.") from exc
     if source is None:
         raise RelocationNotFoundError("Inspection source not found.")
+    if source.original_image is None:
+        raise RelocationNotApplicableError("This voice-note inspection has no photo.")
 
     result = source.result
     has_defect = bool(result.defect_types) or result.grade == "Reject"
@@ -280,7 +282,7 @@ def relocate_defect(inspection_id: str) -> InspectionResult:
         severity=result.severity,
         visual_observation=observation,
     )
-    detector = create_vision_detector(supported_types=_active_category_slugs())
+    detector = create_vision_detector(supported_types=list_active_category_slugs())
     locate = getattr(detector, "locate_defect", None)
     if not callable(locate):
         raise RelocationVisionError("The configured vision provider cannot locate defects.")
@@ -302,14 +304,88 @@ def relocate_defect(inspection_id: str) -> InspectionResult:
     return updated
 
 
-def _active_category_slugs() -> list[str]:
-    """Load the active category slugs, falling back to the built-in defaults."""
+def _voice_verdict_notes(
+    finding: Finding, grade_value: Grade, verdict_value: Verdict
+) -> list[str]:
+    """Explain a voice-only decision without claiming anything was seen."""
+    notes: list[str] = []
+    observation = finding.visual_observation.strip()
+    if observation:
+        notes.append(f"Spoken description: {observation}")
+    notes.extend(
+        "The voice note does not identify an edible product, so no quality grade applies."
+        if note.startswith("The photo does not show an edible product")
+        else note
+        for note in _grade_notes(finding, grade_value)
+    )
+    if verdict_value == "defect" and grade_value != "Reject":
+        defects = ", ".join(defect.value for defect in finding.defect_types)
+        notes.append(f"The described defects ({defects}) make the verdict defect.")
+    elif verdict_value == "defect":
+        notes.append("The Reject grade results in a defect verdict.")
+    elif verdict_value == "pass":
+        notes.append("No defect was described, so the verdict is pass.")
+    else:
+        notes.append(
+            "The spoken description requires manual review, so the verdict is needs review."
+        )
+    return notes
+
+
+def _should_report_voice(result: InspectionResult) -> bool:
+    """Decide whether a voice-only inspection can receive a PDF report."""
+    if _is_edible_product(result):
+        return True
+    # No product was identified, but the note still deserves a manual-review record.
+    return bool(result.voice_note_transcript) and not result.detected_item.strip()
+
+
+def inspect_from_voice(audio_data: bytes, filename: str) -> InspectionResult:
+    """Transcribe a voice note, grade what was said, and save it like a photo inspection.
+
+    The transcript is the only evidence, so the spoken product and condition are
+    extracted into a Finding and passed through the same grading rules used for
+    photos. Voice-only records have no image files but do receive PDF reports.
+    """
+    from app.ai.transcription import transcribe_voice_note
+    from app.ai.voice_analysis import analyze_transcript
+
+    transcript = transcribe_voice_note(audio_data, filename)
+    supported = list_active_category_slugs()
+    finding = _normalize_category(analyze_transcript(transcript, supported), supported)
+    grade_value, action = grade(finding)
+    verdict_value = _verdict(grade_value, finding)
+    result = InspectionResult(
+        inspection_id=str(uuid4()),
+        produce_type=finding.produce_type,
+        detected_item=finding.detected_item.strip(),
+        item_is_fruit=finding.item_is_fruit,
+        in_inspection_categories=_in_inspection_categories(finding, supported),
+        verdict=verdict_value,
+        confidence=finding.confidence,
+        bbox=None,
+        defect_types=finding.defect_types,
+        severity=finding.severity,
+        grade=grade_value,
+        verdict_notes=_voice_verdict_notes(finding, grade_value, verdict_value),
+        recommended_action=action,
+        disclaimer=DEFAULT_DISCLAIMER,
+        report_available=False,
+        voice_note_transcript=transcript,
+    )
+    repository = InspectionRepository(settings.inspection_db_path)
     try:
-        active = list_active_category_slugs()
-    except CategoryError:
-        LOGGER.warning("Category storage unavailable; using default inspection categories.")
-        return list(DEFAULT_SUPPORTED_TYPES)
-    return active or list(DEFAULT_SUPPORTED_TYPES)
+        repository.save_voice_inspection(result)
+    except HistoryStorageError as exc:
+        raise InspectionStorageError(str(exc)) from exc
+
+    report_available = False
+    if _should_report_voice(result):
+        try:
+            report_available = generate_automatic_report(result.inspection_id)
+        except Exception:
+            LOGGER.exception("Automatic voice report generation failed unexpectedly.")
+    return result.model_copy(update={"report_available": report_available})
 
 
 def inspect_produce(
@@ -318,7 +394,7 @@ def inspect_produce(
     supported_types: list[str] | None = None,
 ) -> InspectionResult:
     """Validate, analyze, and grade an uploaded product image."""
-    supported = supported_types or _active_category_slugs()
+    supported = supported_types or list_active_category_slugs()
     image = load_and_validate_image(data)
     detector = detect
     if detector is None:
@@ -378,9 +454,7 @@ def save_inspection_history(
         LOGGER.info("Result has no bbox; skipping annotation.")
         return
     try:
-        repository.save_annotated(
-            result.inspection_id, annotate_photo(original_image, bbox_to_use)
-        )
+        repository.save_annotated(result.inspection_id, annotate_photo(original_image, bbox_to_use))
     except Exception as exc:
         LOGGER.warning("Annotated photo could not be saved: %s", exc)
 
@@ -432,6 +506,6 @@ def get_inspection_annotated(inspection_id: str) -> bytes | None:
         source = repository.get_report_source(inspection_id)
     except HistoryStorageError as exc:
         raise InspectionStorageError(str(exc)) from exc
-    if source is None or source.result.bbox is None:
+    if source is None or source.result.bbox is None or source.original_image is None:
         return None
     return annotate_photo(source.original_image, source.result.bbox)
