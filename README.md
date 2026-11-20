@@ -145,7 +145,6 @@ frontend/src/
   services/     Typed API clients
   utils/        Audio helpers
 tests/          Backend tests (AI clients mocked)
-sample_images/  Example produce photos for trying the app
 data/           Local SQLite database and images (gitignored)
 ```
 
