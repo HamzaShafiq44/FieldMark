@@ -37,7 +37,7 @@ import {
   type InspectionResult,
 } from '../services/api'
 import { listCategories, type ProductCategory } from '../services/categories'
-import { prepareRecording } from '../utils/audio'
+import { prepareRecording, SILENCE_PEAK_THRESHOLD } from '../utils/audio'
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const MAX_VOICE_NOTE_BYTES = 25 * 1024 * 1024
@@ -115,6 +115,26 @@ function capitalize(value: string): string {
 
 function humanizeSlug(slug: string): string {
   return capitalize(slug.replace(/-/g, ' '))
+}
+
+// Virtual loopback devices (BlackHole, Teams, Soundflower) are silent unless
+// another app feeds them audio, so never pick one automatically for a voice note.
+const VIRTUAL_AUDIO_PATTERN = /blackhole|virtual|teams|loopback|soundflower/i
+const BUILTIN_MIC_PATTERN = /macbook pro microphone|built-in microphone|internal microphone/i
+
+/** Pick the real hardware microphone, preferring the built-in one. */
+function preferredAudioDevice(devices: MediaDeviceInfo[]): MediaDeviceInfo | undefined {
+  return (
+    devices.find(
+      (device) =>
+        BUILTIN_MIC_PATTERN.test(device.label) && !VIRTUAL_AUDIO_PATTERN.test(device.label),
+    ) ??
+    devices.find(
+      (device) => device.deviceId !== 'default' && !VIRTUAL_AUDIO_PATTERN.test(device.label),
+    ) ??
+    devices.find((device) => !VIRTUAL_AUDIO_PATTERN.test(device.label)) ??
+    devices[0]
+  )
 }
 
 function productName(
@@ -235,7 +255,9 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const [result, setResult] = useState<InspectionResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
-  const [isLoading, setIsLoading] = useState(false)
+  // One flag per action so inspecting a voice note never spins the photo button.
+  const [activeInspection, setActiveInspection] = useState<'image' | 'voice' | null>(null)
+  const lastInspectionKindRef = useRef<'image' | 'voice'>('image')
   const [history, setHistory] = useState<InspectionHistoryItem[]>([])
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -253,8 +275,15 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const audioContextRef = useRef<AudioContext | null>(null)
   const micLevelTimerRef = useRef<number | null>(null)
   const voiceAudioUrlRef = useRef<string | null>(null)
+  const recordingTokenRef = useRef(0)
+  const activeDeviceLabelRef = useRef<string | null>(null)
+  // Distinguish an explicit user choice from our label-less initial guess.
+  const userSelectedDeviceRef = useRef(false)
   const [micLevel, setMicLevel] = useState(0)
   const [voiceWarning, setVoiceWarning] = useState<string | null>(null)
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
+  const [activeDeviceLabel, setActiveDeviceLabel] = useState<string | null>(null)
   const [reportActionId, setReportActionId] = useState<string | null>(null)
   const [reportError, setReportError] = useState<string | null>(null)
   const [relocationId, setRelocationId] = useState<string | null>(null)
@@ -362,6 +391,45 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
     }
   }, [])
 
+  const applyAudioDevices = useCallback((devices: MediaDeviceInfo[]) => {
+    const inputs = devices.filter((device) => device.kind === 'audioinput')
+    setAudioDevices(inputs)
+    setSelectedDeviceId((current) => {
+      if (
+        userSelectedDeviceRef.current &&
+        current &&
+        inputs.some((device) => device.deviceId === current)
+      ) {
+        return current
+      }
+      return preferredAudioDevice(inputs)?.deviceId ?? ''
+    })
+  }, [])
+
+  const refreshAudioDevices = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return
+    try {
+      applyAudioDevices(await navigator.mediaDevices.enumerateDevices())
+    } catch {
+      // Device labels stay hidden until permission is granted; try again on record.
+    }
+  }, [applyAudioDevices])
+
+  useEffect(() => {
+    let active = true
+    navigator.mediaDevices
+      ?.enumerateDevices?.()
+      .then((devices) => {
+        if (active) applyAudioDevices(devices)
+      })
+      .catch(() => {
+        // Labels may be hidden until the user grants microphone permission.
+      })
+    return () => {
+      active = false
+    }
+  }, [applyAudioDevices])
+
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop()
@@ -375,31 +443,72 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   }, [stopMicMeter])
 
   const startRecording = useCallback(async () => {
-    if (isLoading || isRecording) return
+    if (activeInspection || isRecording) return
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setError('Audio recording is not supported in this browser.')
       return
     }
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    let audioContext: AudioContext | null = null
+    let stream: MediaStream | null = null
+    const token = ++recordingTokenRef.current
 
-      // Live input meter so the user can see whether the browser hears them.
+    try {
+      // Create and resume inside the click handler, before any await, so
+      // autoplay policies cannot leave the meter permanently at zero.
       const AudioContextClass =
         window.AudioContext ??
         (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
       if (AudioContextClass) {
-        const audioContext = new AudioContextClass()
+        audioContext = new AudioContextClass()
         audioContextRef.current = audioContext
-        void audioContext.resume().catch(() => {
-          // Some browsers start suspended; the meter still updates once unlocked.
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume()
+        }
+      }
+
+      const requestedId = selectedDeviceId || undefined
+      stream = await navigator.mediaDevices.getUserMedia(
+        requestedId ? { audio: { deviceId: { exact: requestedId } } } : { audio: true },
+      )
+
+      // Labels become available after permission. If the browser handed us a
+      // silent virtual device (BlackHole/Teams), re-open the real microphone.
+      await refreshAudioDevices()
+      const devices = (await navigator.mediaDevices.enumerateDevices()).filter(
+        (device) => device.kind === 'audioinput',
+      )
+      // Once labels are available, re-evaluate the auto choice: the initial
+      // label-less guess may have been a silent virtual device.
+      const target =
+        userSelectedDeviceRef.current && requestedId
+          ? devices.find((device) => device.deviceId === requestedId)
+          : preferredAudioDevice(devices)
+      const currentTrack = stream.getAudioTracks()[0]
+      if (target && currentTrack && currentTrack.getSettings().deviceId !== target.deviceId) {
+        currentTrack.stop()
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { deviceId: { exact: target.deviceId } },
         })
-        const source = audioContext.createMediaStreamSource(stream)
+      }
+
+      // Freeze the final stream so the onstop closure keeps the non-null type.
+      const activeStream = stream
+      const activeTrack = activeStream.getAudioTracks()[0]
+      const label = activeTrack?.label || target?.label || 'the selected microphone'
+      activeDeviceLabelRef.current = label
+      setActiveDeviceLabel(label)
+
+      // Live input meter, plus an immediate warning when the input is silent.
+      if (audioContext) {
+        const source = audioContext.createMediaStreamSource(activeStream)
         const analyser = audioContext.createAnalyser()
         analyser.fftSize = 1024
         source.connect(analyser)
         analyserRef.current = analyser
         const data = new Uint8Array(analyser.fftSize)
+        let silentMs = 0
+        let warnedAboutSilence = false
         setMicLevel(0)
         if (micLevelTimerRef.current) clearInterval(micLevelTimerRef.current)
         micLevelTimerRef.current = window.setInterval(() => {
@@ -410,6 +519,13 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
             if (amplitude > peak) peak = amplitude
           }
           setMicLevel(peak)
+          silentMs = peak < SILENCE_PEAK_THRESHOLD ? silentMs + 100 : 0
+          if (!warnedAboutSilence && silentMs >= 1500) {
+            warnedAboutSilence = true
+            setVoiceWarning(
+              `No signal from ${activeDeviceLabelRef.current ?? 'the selected microphone'}. Choose another microphone above, or check System Settings → Sound → Input.`,
+            )
+          }
         }, 100)
       }
 
@@ -432,7 +548,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
       }
 
       const recorder = new MediaRecorder(
-        stream,
+        activeStream,
         chosenMimeType ? { mimeType: chosenMimeType } : undefined,
       )
       mediaRecorderRef.current = recorder
@@ -445,8 +561,12 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
       }
 
       recorder.onstop = () => {
-        stream.getTracks().forEach((track) => track.stop())
-        stopMicMeter()
+        activeStream.getTracks().forEach((track) => track.stop())
+        // Ignore a late onstop from an older recording: it must not close the
+        // meter belonging to a newer one.
+        if (recordingTokenRef.current === token) stopMicMeter()
+        activeDeviceLabelRef.current = null
+        setActiveDeviceLabel(null)
 
         const durationMs =
           recordingStartedAtRef.current === null ? 0 : Date.now() - recordingStartedAtRef.current
@@ -458,6 +578,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
           durationMs,
           bytes: audioBlob.size,
           mimeType: blobType,
+          device: label,
         })
 
         // Reject only genuinely empty recordings; real speech in compressed
@@ -499,10 +620,11 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
 
             setVoiceNoteFile(recordedFile)
             updateVoiceAudioUrl(recordedFile)
-            setVoiceWarning(
+            setVoiceWarning((current) =>
               hasSpeech
                 ? null
-                : 'The recording sounded very quiet. If the transcript is empty, check your microphone input and try again.',
+                : (current ??
+                  'The recording sounded very quiet. If the transcript is empty, check your microphone input and try again.'),
             )
           })
           .catch(() => {
@@ -523,13 +645,24 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
         setRecordingSeconds(Math.floor((Date.now() - startTime) / 1000))
       }, 500)
     } catch (caught: unknown) {
+      stream?.getTracks().forEach((track) => track.stop())
+      if (audioContext) {
+        if (audioContextRef.current === audioContext) stopMicMeter()
+        else if (audioContext.state !== 'closed') void audioContext.close().catch(() => {})
+      }
       setIsRecording(false)
-      stopMicMeter()
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
       const message = caught instanceof Error ? caught.message : 'Microphone access denied.'
       setError(`Microphone error: ${message}`)
     }
-  }, [isLoading, isRecording, updateVoiceAudioUrl, stopMicMeter])
+  }, [
+    activeInspection,
+    isRecording,
+    selectedDeviceId,
+    refreshAudioDevices,
+    updateVoiceAudioUrl,
+    stopMicMeter,
+  ])
 
   const selectImage = useCallback(
     (selected: File) => {
@@ -623,17 +756,19 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
     setError(null)
   }
 
-  const handleInspect = async () => {
-    if ((!file && !voiceNoteFile) || isLoading) return
+  const handleInspect = async (kind: 'image' | 'voice') => {
+    if (activeInspection) return
+    if (kind === 'image' && !file) return
+    if (kind === 'voice' && !voiceNoteFile) return
 
-    setIsLoading(true)
+    lastInspectionKindRef.current = kind
+    setActiveInspection(kind)
     setError(null)
     setResult(null)
     setReportError(null)
     try {
-      const inspection = voiceNoteFile
-        ? await inspectVoiceNote(voiceNoteFile)
-        : await inspectProduce(file!)
+      const inspection =
+        kind === 'voice' ? await inspectVoiceNote(voiceNoteFile!) : await inspectProduce(file!)
       setResult(inspection)
       onApiStatusChange('connected')
       void refreshHistory()
@@ -651,7 +786,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
         setError(caught instanceof Error ? caught.message : 'Inspection failed. Please try again.')
       }
     } finally {
-      setIsLoading(false)
+      setActiveInspection(null)
     }
   }
 
@@ -729,7 +864,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   }
 
   const handleClearHistory = async () => {
-    if (isClearingHistory || isLoading || reportActionId || history.length === 0) return
+    if (isClearingHistory || activeInspection || reportActionId || history.length === 0) return
     const confirmed = window.confirm(
       'Permanently delete all saved inspections, original photos, and PDF reports? This cannot be undone.',
     )
@@ -906,10 +1041,10 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
           <button
             className="inspect-button"
             type="button"
-            onClick={handleInspect}
-            disabled={!(file || voiceNoteFile) || isLoading}
+            onClick={() => void handleInspect('image')}
+            disabled={!file || activeInspection !== null}
           >
-            {isLoading ? (
+            {activeInspection === 'image' ? (
               <>
                 <LoaderCircle className="spin" size={18} /> Inspecting photo
               </>
@@ -920,7 +1055,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
             )}
           </button>
           <p className="button-caption">
-            <Sparkles size={13} /> AI-assisted visual grading · usually under 10 seconds
+            <Sparkles size={13} /> AI-assisted visual grading
           </p>
           <p className="upload-retention-note">
             Original photos are stored with inspection history so PDF reports can include them.
@@ -963,6 +1098,35 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
               )}
             </div>
 
+            <div className="mic-device-row">
+              <label className="mic-device-label" htmlFor="mic-device">
+                Microphone
+                <select
+                  id="mic-device"
+                  className="mic-device-select"
+                  value={selectedDeviceId}
+                  onChange={(event) => {
+                    userSelectedDeviceRef.current = true
+                    setSelectedDeviceId(event.target.value)
+                  }}
+                  disabled={isRecording || activeInspection !== null}
+                >
+                  {audioDevices.length === 0 ? (
+                    <option value="">Default microphone</option>
+                  ) : (
+                    audioDevices.map((device) => (
+                      <option key={device.deviceId || 'default'} value={device.deviceId}>
+                        {device.label || `Microphone ${device.deviceId.slice(0, 6)}`}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+              {activeDeviceLabel && (
+                <span className="mic-device-active">Using: {activeDeviceLabel}</span>
+              )}
+            </div>
+
             <div className="record-actions">
               {isRecording ? (
                 <button
@@ -976,8 +1140,8 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                 <button
                   className="camera-button recording-btn"
                   type="button"
-                  onClick={startRecording}
-                  disabled={isLoading}
+                  onClick={() => void startRecording()}
+                  disabled={activeInspection !== null}
                 >
                   <Mic size={16} /> Record in browser
                 </button>
@@ -1053,14 +1217,14 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
               {voiceWarning}
             </p>
           )}
-
+          
           <button
             className="inspect-button"
             type="button"
-            onClick={handleInspect}
-            disabled={!voiceNoteFile || isLoading || isRecording}
+            onClick={() => void handleInspect('voice')}
+            disabled={!voiceNoteFile || activeInspection !== null || isRecording}
           >
-            {isLoading && voiceNoteFile ? (
+            {activeInspection === 'voice' ? (
               <>
                 <LoaderCircle className="spin" size={18} /> Analyzing voice note
               </>
@@ -1107,20 +1271,20 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
               <button
                 type="button"
                 className="retry-button"
-                onClick={handleInspect}
-                disabled={!(file || voiceNoteFile) || isLoading}
+                onClick={() => void handleInspect(lastInspectionKindRef.current)}
+                disabled={activeInspection !== null}
               >
                 Try again <RefreshCw size={15} />
               </button>
             </div>
-          ) : isLoading ? (
+          ) : activeInspection ? (
             <div className="result-message loading-message">
               <span className="scan-loader">
                 <ScanLine size={30} />
               </span>
               <h3>Looking a little closer…</h3>
               <p>
-                {voiceNoteFile
+                {activeInspection === 'voice'
                   ? 'Reading what you said and estimating a quality grade.'
                   : 'Checking visible signs and estimating a quality grade.'}
               </p>
@@ -1408,7 +1572,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                 history.length === 0 ||
                 isHistoryLoading ||
                 isClearingHistory ||
-                isLoading ||
+                activeInspection !== null ||
                 reportActionId !== null
               }
             >

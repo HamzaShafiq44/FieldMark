@@ -88,46 +88,49 @@ export async function checkApiHealth(): Promise<boolean> {
   return response.ok
 }
 
+/** AI providers can stall; never leave the interface spinning indefinitely. */
+const INSPECTION_TIMEOUT_MS = 90_000
+
 export async function inspectVoiceNote(file: File): Promise<InspectionResult> {
   const formData = new FormData()
   formData.append('voice_note', file)
-
-  const response = await fetch(apiUrl('/inspections/product'), {
-    method: 'POST',
-    body: formData,
-  })
-
-  if (!response.ok) {
-    const body = (await response.json()) as { detail?: unknown }
-    const message =
-      typeof body.detail === 'string'
-        ? body.detail
-        : `Inspection failed with status ${response.status}.`
-    throw new ApiError(message, response.status)
-  }
-
-  return (await response.json()) as InspectionResult
+  return postInspection(formData)
 }
 
 export async function inspectProduce(file: File): Promise<InspectionResult> {
   const formData = new FormData()
   formData.append('image', file)
+  return postInspection(formData)
+}
 
-  const response = await fetch(apiUrl('/inspections/product'), {
-    method: 'POST',
-    body: formData,
-  })
+async function postInspection(formData: FormData): Promise<InspectionResult> {
+  const controller = new AbortController()
+  const timeoutId = window.setTimeout(() => controller.abort(), INSPECTION_TIMEOUT_MS)
+  try {
+    const response = await fetch(apiUrl('/inspections/product'), {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal,
+    })
 
-  if (!response.ok) {
-    const body = (await response.json()) as { detail?: unknown }
-    const message =
-      typeof body.detail === 'string'
-        ? body.detail
-        : `Inspection failed with status ${response.status}.`
-    throw new ApiError(message, response.status)
+    if (!response.ok) {
+      const body = (await response.json()) as { detail?: unknown }
+      const message =
+        typeof body.detail === 'string'
+          ? body.detail
+          : `Inspection failed with status ${response.status}.`
+      throw new ApiError(message, response.status)
+    }
+
+    return (await response.json()) as InspectionResult
+  } catch (caught: unknown) {
+    if (caught instanceof DOMException && caught.name === 'AbortError') {
+      throw new ApiError('The inspection took too long. Check the API and try again.', 408)
+    }
+    throw caught
+  } finally {
+    window.clearTimeout(timeoutId)
   }
-
-  return (await response.json()) as InspectionResult
 }
 
 export async function listInspectionHistory(): Promise<InspectionHistoryItem[]> {

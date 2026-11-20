@@ -31,29 +31,35 @@ from reportlab.platypus import (
 
 from app.ai.schemas import BBox, InspectionReportText, InspectionResult, ReportUserType
 
-PAGE_MARGIN = 0.45 * inch
-PAGE_TOP_MARGIN = 0.98 * inch
-PAGE_BOTTOM_MARGIN = 0.55 * inch
+PAGE_MARGIN = 0.5 * inch
+PAGE_TOP_MARGIN = 1.08 * inch
+PAGE_BOTTOM_MARGIN = 0.62 * inch
 CONTENT_WIDTH = A4[0] - 2 * PAGE_MARGIN
-PHOTO_WIDTH = CONTENT_WIDTH / 2 - 0.12 * inch
+PHOTO_WIDTH = CONTENT_WIDTH / 2 - 0.2 * inch
 PHOTO_HEIGHT = 2.5 * inch
 PHOTO_PAIR_HEIGHT = 2.15 * inch
-OUTCOME_HEIGHT = 1.06 * inch
-FOOTER_RULE_Y = 0.5 * inch
-FOOTER_TEXT_Y = 0.3 * inch
+OUTCOME_HEIGHT = 1.28 * inch
+HEADER_HEIGHT = 0.82 * inch
+FOOTER_RULE_Y = 0.52 * inch
+FOOTER_TEXT_Y = 0.32 * inch
 IMAGE_JPEG_QUALITY = 90
 ANNOTATION_COLOR = (190, 48, 37)
 ANNOTATION_WIDTH = 5
-INK = colors.HexColor("#203b2e")
-MUTED = colors.HexColor("#68766b")
-LINE = colors.HexColor("#dce4da")
-PALE_GREEN = colors.HexColor("#eef3e7")
-LIME = colors.HexColor("#d7ed88")
-LEAF = colors.HexColor("#5d8154")
-WARNING = colors.HexColor("#fff3d4")
+
+# Palette: deep forest + lime accent, with warm warning / defect tones.
+INK = colors.HexColor("#17332a")
+FOREST = colors.HexColor("#112a21")
+MUTED = colors.HexColor("#6b7a6f")
+LINE = colors.HexColor("#dde5da")
+TRACK = colors.HexColor("#e3e9df")
+PALE_GREEN = colors.HexColor("#f1f6ea")
+LIME = colors.HexColor("#cfe96b")
+LEAF = colors.HexColor("#4f7a49")
+HEADER_SUBTLE = colors.HexColor("#9fbba0")
+WARNING = colors.HexColor("#fff4d9")
 WARNING_BORDER = colors.HexColor("#d5a84c")
 WARNING_INK = colors.HexColor("#5e4513")
-DEFECT_BACKGROUND = colors.HexColor("#fbe9e6")
+DEFECT_BACKGROUND = colors.HexColor("#fdecea")
 DEFECT_BORDER = colors.HexColor("#bd4b3b")
 SEVERITY_NONE = colors.HexColor("#c3d6c1")
 SEVERITY_LOW = colors.HexColor("#e6e0a8")
@@ -71,6 +77,15 @@ pdfmetrics.registerFont(TTFont(BOLD_FONT_NAME, str(FONT_DIRECTORY / "VeraBd.ttf"
 pdfmetrics.registerFont(TTFont(ITALIC_FONT_NAME, str(FONT_DIRECTORY / "VeraIt.ttf")))
 
 
+def _truncate(text: str, font_name: str, font_size: float, max_width: float) -> str:
+    """Shorten text with an ellipsis so it fits within max_width."""
+    if pdfmetrics.stringWidth(text, font_name, font_size) <= max_width:
+        return text
+    while text and pdfmetrics.stringWidth(f"{text}…", font_name, font_size) > max_width:
+        text = text[:-1]
+    return f"{text.rstrip()}…" if text else ""
+
+
 class _OutcomeCard(Flowable):
     """A branded, grade-first summary card for the top of the report."""
 
@@ -86,9 +101,9 @@ class _OutcomeCard(Flowable):
         return CONTENT_WIDTH, OUTCOME_HEIGHT
 
     def draw(self) -> None:
-        """Draw the grade, verdict badge, product name, and secondary facts."""
+        """Draw the grade tile, verdict and severity badges, product, and confidence meter."""
         result = self.result
-        background, accent, pill_text = _outcome_palette(result)
+        background, accent, on_accent = _outcome_palette(result)
         canvas = self.canv
         width = self.width
         height = self.height
@@ -97,127 +112,55 @@ class _OutcomeCard(Flowable):
             "Needs review" if manual_review else "Pass" if result.verdict == "pass" else "Defect"
         )
         product = result.detected_item.strip().title() or result.produce_type.title()
-        confidence = "Unavailable" if result.confidence is None else f"{result.confidence:.0%}"
-        grade_label = "—" if manual_review else result.grade
+        grade_label = "—" if manual_review else str(result.grade)
         severity_label = str(result.severity).title()
 
         canvas.saveState()
+
+        # Card surface with a soft border.
         canvas.setFillColor(background)
-        canvas.roundRect(0, 0, width, height, 11, fill=1, stroke=0)
+        canvas.roundRect(0, 0, width, height, 14, fill=1, stroke=0)
         canvas.setStrokeColor(LINE)
-        canvas.setLineWidth(0.5)
-        canvas.roundRect(0, 0, width, height, 11, fill=0, stroke=1)
+        canvas.setLineWidth(0.6)
+        canvas.roundRect(0, 0, width, height, 14, fill=0, stroke=1)
 
-        canvas.setStrokeColor(accent)
-        canvas.setLineWidth(2.6)
-        canvas.setLineCap(1)
-        canvas.line(0.2 * inch, 0.18 * inch, 0.2 * inch, height - 0.18 * inch)
-
-        grade_box_width = 0.98 * inch
-        grade_box_height = 0.72 * inch
-        grade_box_x = 0.36 * inch
-        grade_box_y = 0.17 * inch
-        canvas.setFillColor(colors.white)
-        canvas.setStrokeColor(accent)
-        canvas.setLineWidth(0.8)
-        canvas.roundRect(
-            grade_box_x,
-            grade_box_y,
-            grade_box_width,
-            grade_box_height,
-            12,
-            fill=1,
-            stroke=1,
-        )
+        # Solid grade tile.
+        tile = 0.94 * inch
+        tile_x = 0.22 * inch
+        tile_y = (height - tile) / 2
         canvas.setFillColor(accent)
+        canvas.roundRect(tile_x, tile_y, tile, tile, 14, fill=1, stroke=0)
+        canvas.setFillColor(on_accent)
+        canvas.setFont(BOLD_FONT_NAME, 5.4)
+        canvas.drawCentredString(tile_x + tile / 2, tile_y + tile - 0.2 * inch, "GRADE")
         grade_size = 34 if len(grade_label) <= 2 else 20
         while (
-            grade_size > 12
+            grade_size > 11
             and pdfmetrics.stringWidth(grade_label, BOLD_FONT_NAME, grade_size)
-            > grade_box_width - 0.14 * inch
+            > tile - 0.2 * inch
         ):
             grade_size -= 1
         canvas.setFont(BOLD_FONT_NAME, grade_size)
-        canvas.drawCentredString(
-            grade_box_x + grade_box_width / 2,
-            grade_box_y + (grade_box_height - grade_size * 0.72) / 2,
-            grade_label,
-        )
+        canvas.drawCentredString(tile_x + tile / 2, tile_y + 0.2 * inch, grade_label)
 
-        # Grade gauge bar below the letter inside the grade box.
-        gauge_width = grade_box_width - 0.14 * inch
-        gauge_height = 0.2 * inch
-        gauge_x = grade_box_x + 0.07 * inch
-        gauge_y = grade_box_y - 0.075 * inch
-        gauge_inner_h = gauge_height - 2
-        gauge_inner_r = gauge_inner_h / 2
-        canvas.setStrokeColor(colors.HexColor("#e5e9df"))
-        canvas.setLineWidth(1)
-        canvas.roundRect(
-            gauge_x, gauge_y, gauge_width, gauge_height, gauge_height / 2, fill=0, stroke=1
-        )
-        if not manual_review and result.grade == "A":
-            canvas.setFillColor(LEAF)
-            canvas.roundRect(
-                gauge_x + 1,
-                gauge_y + 1,
-                gauge_width - 2,
-                gauge_inner_h,
-                gauge_inner_r,
-                fill=1,
-                stroke=0,
-            )
-        elif not manual_review and result.grade == "B":
-            canvas.setFillColor(LEAF)
-            canvas.roundRect(
-                gauge_x + 1,
-                gauge_y + 1,
-                (gauge_width - 2) * 0.62,
-                gauge_inner_h,
-                gauge_inner_r,
-                fill=1,
-                stroke=0,
-            )
-        elif not manual_review and result.grade == "Reject":
-            canvas.setFillColor(DEFECT_BORDER)
-            canvas.roundRect(
-                gauge_x + 1,
-                gauge_y + 1,
-                1,
-                gauge_inner_h,
-                gauge_inner_r,
-                fill=1,
-                stroke=0,
-            )
-
-        content_x = grade_box_x + grade_box_width + 0.28 * inch
+        content_x = tile_x + tile + 0.3 * inch
         content_width = width - content_x - 0.3 * inch
+
+        # Verdict pill.
         pill_font_size = 6.2
         pill_text_width = pdfmetrics.stringWidth(verdict.upper(), BOLD_FONT_NAME, pill_font_size)
-        pill_width = pill_text_width + 0.24 * inch
-        pill_height = 0.21 * inch
-        pill_y = height - 0.37 * inch
+        pill_width = pill_text_width + 0.26 * inch
+        pill_height = 0.22 * inch
+        pill_y = height - 0.4 * inch
         canvas.setFillColor(accent)
         canvas.roundRect(
             content_x, pill_y, pill_width, pill_height, pill_height / 2, fill=1, stroke=0
         )
-        canvas.setFillColor(pill_text)
+        canvas.setFillColor(on_accent)
         canvas.setFont(BOLD_FONT_NAME, pill_font_size)
-        canvas.drawString(content_x + 0.12 * inch, pill_y + 0.066 * inch, verdict.upper())
+        canvas.drawString(content_x + 0.13 * inch, pill_y + 0.073 * inch, verdict.upper())
 
-        canvas.setFillColor(INK)
-        _draw_fitted_text(
-            canvas,
-            product,
-            content_x,
-            height - 0.56 * inch,
-            content_width,
-            BOLD_FONT_NAME,
-            16,
-            min_size=9,
-        )
-
-        # Severity badge (independent color coding).
+        # Severity badge (independent colour coding) beside the verdict pill.
         severity_colors = {
             "None": SEVERITY_NONE,
             "Low": SEVERITY_LOW,
@@ -225,22 +168,53 @@ class _OutcomeCard(Flowable):
             "High": SEVERITY_HIGH,
         }
         severity_fill = severity_colors.get(severity_label, SEVERITY_NONE)
-        severity_text = pdfmetrics.stringWidth(severity_label.upper(), BOLD_FONT_NAME, 5.4)
-        badge_width = severity_text + 0.22 * inch
-        badge_height = 0.17 * inch
-        badge_x = content_x
-        badge_y = height - 0.78 * inch
+        severity_text = f"SEVERITY  {severity_label.upper()}"
+        severity_text_width = pdfmetrics.stringWidth(severity_text, BOLD_FONT_NAME, 5.6)
+        badge_width = severity_text_width + 0.26 * inch
+        badge_x = content_x + pill_width + 0.1 * inch
         canvas.setFillColor(severity_fill)
         canvas.roundRect(
-            badge_x, badge_y, badge_width, badge_height, badge_height / 2, fill=1, stroke=0
+            badge_x, pill_y, badge_width, pill_height, pill_height / 2, fill=1, stroke=0
         )
         canvas.setFillColor(colors.white if severity_label in ("Medium", "High") else INK)
-        canvas.setFont(BOLD_FONT_NAME, 5.4)
-        canvas.drawString(badge_x + 0.11 * inch, badge_y + 0.05 * inch, severity_label.upper())
+        canvas.setFont(BOLD_FONT_NAME, 5.6)
+        canvas.drawString(badge_x + 0.13 * inch, pill_y + 0.075 * inch, severity_text)
 
+        # Product name.
+        canvas.setFillColor(INK)
+        _draw_fitted_text(
+            canvas,
+            product,
+            content_x,
+            height - 0.78 * inch,
+            content_width,
+            BOLD_FONT_NAME,
+            19,
+            min_size=10,
+        )
+
+        # Confidence meter.
+        meter_y = 0.24 * inch
         canvas.setFillColor(MUTED)
-        canvas.setFont(REGULAR_FONT_NAME, 7.2)
-        canvas.drawString(content_x, 0.17 * inch, f"Confidence {confidence}")
+        canvas.setFont(BOLD_FONT_NAME, 5.4)
+        canvas.drawString(content_x, meter_y + 0.005 * inch, "CONFIDENCE")
+        bar_x = content_x + 0.78 * inch
+        bar_width = max(0.5 * inch, min(2.4 * inch, content_width - 1.5 * inch))
+        bar_height = 5.0
+        if result.confidence is None:
+            canvas.setFillColor(MUTED)
+            canvas.setFont(REGULAR_FONT_NAME, 7.2)
+            canvas.drawString(bar_x, meter_y, "Unavailable")
+        else:
+            ratio = max(0.0, min(1.0, float(result.confidence)))
+            canvas.setFillColor(TRACK)
+            canvas.roundRect(bar_x, meter_y, bar_width, bar_height, bar_height / 2, fill=1, stroke=0)
+            fill_width = max(bar_height, bar_width * ratio)
+            canvas.setFillColor(LEAF if accent == INK else accent)
+            canvas.roundRect(bar_x, meter_y, fill_width, bar_height, bar_height / 2, fill=1, stroke=0)
+            canvas.setFillColor(INK)
+            canvas.setFont(BOLD_FONT_NAME, 7.2)
+            canvas.drawString(bar_x + bar_width + 0.1 * inch, meter_y - 0.4, f"{ratio:.0%}")
         canvas.restoreState()
 
 
@@ -257,7 +231,7 @@ class _FactChips(Flowable):
 
     def wrap(self, aW: float, aH: float) -> tuple[float, float]:
         self.width = CONTENT_WIDTH
-        self.height = 0.42 * inch
+        self.height = 0.44 * inch
         return self.width, self.height
 
     def draw(self) -> None:
@@ -272,28 +246,36 @@ class _FactChips(Flowable):
             ("Prepared for", USER_TYPE_LABELS[self.user_type]),
         ]
         canvas = self.canv
-        x = 0
-        gap = 0.18 * inch
-        chip_padding_x = 0.14 * inch
-        font_size = 6.4
+        x = 0.0
+        gap = 0.12 * inch
+        chip_padding_x = 0.15 * inch
+        font_size = 6.6
         label_size = 5.2
-        for label, value in items:
+        chip_h = 0.28 * inch
+        chip_y = 0.08 * inch
+        for index, (label, value) in enumerate(items):
             label_w = pdfmetrics.stringWidth(label.upper(), BOLD_FONT_NAME, label_size)
-            value_w = pdfmetrics.stringWidth(str(value), REGULAR_FONT_NAME, font_size)
-            chip_w = label_w + value_w + 2 * chip_padding_x + 0.12 * inch
-            chip_h = 0.26 * inch
+            label_gap = 0.09 * inch
+            remaining = CONTENT_WIDTH - x
+            max_value_w = remaining - label_w - label_gap - 2 * chip_padding_x
+            reserved = sum(0.9 * inch for _ in items[index + 1 :])
+            max_value_w = min(max_value_w - reserved, 2.6 * inch)
+            if max_value_w < 0.3 * inch:
+                break
+            text = _truncate(str(value), REGULAR_FONT_NAME, font_size, max_value_w)
+            value_w = pdfmetrics.stringWidth(text, REGULAR_FONT_NAME, font_size)
+            chip_w = label_w + value_w + label_gap + 2 * chip_padding_x
             canvas.setFillColor(PALE_GREEN)
-            canvas.roundRect(x, 0.08 * inch, chip_w, chip_h, chip_h / 2, fill=1, stroke=0)
-            canvas.setFillColor(MUTED)
+            canvas.setStrokeColor(LINE)
+            canvas.setLineWidth(0.5)
+            canvas.roundRect(x, chip_y, chip_w, chip_h, chip_h / 2, fill=1, stroke=1)
+            text_y = chip_y + (chip_h - font_size * 0.72) / 2
+            canvas.setFillColor(LEAF)
             canvas.setFont(BOLD_FONT_NAME, label_size)
-            canvas.drawString(x + chip_padding_x, 0.14 * inch, label.upper())
+            canvas.drawString(x + chip_padding_x, text_y, label.upper())
             canvas.setFillColor(INK)
             canvas.setFont(REGULAR_FONT_NAME, font_size)
-            canvas.drawString(
-                x + chip_padding_x + label_w + 0.08 * inch,
-                0.14 * inch,
-                str(value),
-            )
+            canvas.drawString(x + chip_padding_x + label_w + label_gap, text_y, text)
             x += chip_w + gap
 
 
@@ -356,15 +338,18 @@ def annotate_photo(image_data: bytes, bbox: BBox | None) -> bytes:
 
 def _styles() -> dict[str, ParagraphStyle]:
     """Create reusable report typography styles."""
+    bullet = _text_style("ReportBullet", REGULAR_FONT_NAME, 8.2, 10.8, INK, 0, 4, left_indent=14)
+    bullet.bulletIndent = 3
+    bullet.bulletFontName = BOLD_FONT_NAME
+    bullet.bulletFontSize = 9
+    bullet.bulletColor = LEAF
     return {
-        "section": _text_style("ReportSection", BOLD_FONT_NAME, 8.5, 10, INK, 0, 0),
-        "body": _text_style("ReportBody", REGULAR_FONT_NAME, 8.6, 10.6, INK, 0, 3),
-        "small": _text_style("ReportSmall", REGULAR_FONT_NAME, 6.5, 8.5, MUTED),
+        "section": _text_style("ReportSection", BOLD_FONT_NAME, 8.2, 10, INK, 0, 0),
+        "body": _text_style("ReportBody", REGULAR_FONT_NAME, 8.8, 11.4, INK, 0, 3),
+        "small": _text_style("ReportSmall", REGULAR_FONT_NAME, 6.5, 8.6, MUTED),
         "table": _text_style("ReportTable", REGULAR_FONT_NAME, 7.4, 9.2, INK),
-        "panel_label": _text_style("ReportPanelLabel", BOLD_FONT_NAME, 6.2, 7.5, MUTED, 0, 3),
-        "bullet": _text_style(
-            "ReportBullet", REGULAR_FONT_NAME, 8.0, 10.0, INK, 0, 3, left_indent=11
-        ),
+        "panel_label": _text_style("ReportPanelLabel", BOLD_FONT_NAME, 6.0, 7.5, MUTED, 0, 3),
+        "bullet": bullet,
     }
 
 
@@ -413,16 +398,23 @@ def _story(
         (
             _section_band(styles, "WHAT WE SAW", report_text.summary, PALE_GREEN, LEAF),
             Spacer(1, 10),
-            _section_band(styles, "NEXT STEP", result.recommended_action, PALE_GREEN, LEAF),
+            _section_band(
+                styles,
+                "NEXT STEP",
+                result.recommended_action,
+                colors.HexColor("#f6fbdc"),
+                colors.HexColor("#a7c93a"),
+                label_color=colors.HexColor("#5b6f12"),
+            ),
         )
     )
     if original_image is None:
         # Voice-only inspections have no photo; the transcript is the evidence.
         story.append(Spacer(1, 2))
     else:
-        story.extend((Spacer(1, 10), _section_heading(styles, "Photo evidence")))
+        story.extend((Spacer(1, 12), _section_heading(styles, "Photo evidence"), Spacer(1, 5)))
         story.append(_photo_table(styles, original_image, result))
-    story.extend((Spacer(1, 10), _section_heading(styles, "Inspection findings")))
+    story.extend((Spacer(1, 12), _section_heading(styles, "Inspection findings"), Spacer(1, 6)))
     story.extend(_bullet_paragraph(finding, styles["bullet"]) for finding in report_text.findings)
     _append_voice_note(
         story,
@@ -431,7 +423,7 @@ def _story(
         report_text,
         max_chars=360 if original_image is None else 120,
     )
-    story.extend((Spacer(1, 6), _paragraph(result.disclaimer, styles["small"])))
+    story.extend((Spacer(1, 8), _paragraph(result.disclaimer, styles["small"])))
     return story
 
 
@@ -441,10 +433,14 @@ def _section_band(
     text: str,
     background: colors.Color,
     accent: colors.Color,
+    label_color: colors.Color | None = None,
 ) -> Table:
-    """Full-width band combining a label and body text with a left accent rule."""
+    """Full-width card combining a label and body text with a left accent rule."""
+    if label_color is None:
+        label_color = WARNING_INK if accent == WARNING_BORDER else LEAF
+    label_style = styles["panel_label"].clone(f"Label{label}", textColor=label_color)
     rows = [
-        [Paragraph(escape(label), styles["panel_label"])],
+        [Paragraph(escape(label), label_style)],
         [_paragraph(text, styles["body"])],
     ]
     table = Table(rows, colWidths=[CONTENT_WIDTH], hAlign="LEFT", splitByRow=False)
@@ -453,18 +449,19 @@ def _section_band(
 
 
 def _section_band_style(background: colors.Color, accent: colors.Color) -> TableStyle:
-    """Apply a light fill and left accent rule to a section band."""
+    """Apply a light fill, hairline border, and bold left accent rule to a section card."""
     return TableStyle(
         [
             ("BACKGROUND", (0, 0), (-1, -1), background),
-            ("LINEBEFORE", (0, 0), (0, -1), 2.5, accent),
+            ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+            ("LINEBEFORE", (0, 0), (0, -1), 3.2, accent),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 9),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 9),
-            ("TOPPADDING", (0, 0), (-1, 0), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+            ("TOPPADDING", (0, 0), (-1, 0), 8),
             ("BOTTOMPADDING", (0, 0), (-1, 0), 0),
             ("TOPPADDING", (0, 1), (-1, 1), 0),
-            ("BOTTOMPADDING", (0, 1), (-1, 1), 6),
+            ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
         ]
     )
 
@@ -474,7 +471,7 @@ def _section_heading(styles: dict[str, ParagraphStyle], title: str) -> Flowable:
     return _group(
         [
             _paragraph(title.upper(), styles["section"]),
-            HRFlowable(width="100%", thickness=0.5, color=LINE, spaceBefore=2, spaceAfter=0),
+            HRFlowable(width="100%", thickness=0.6, color=LINE, spaceBefore=3, spaceAfter=0),
         ]
     )
 
@@ -487,11 +484,11 @@ def _photo_table(
     """Include an annotated preview whenever a defect bounding box is present."""
     if result.bbox is None:
         rows = [
-            [_pdf_image(original_image, CONTENT_WIDTH)],
+            [_pdf_image(original_image, CONTENT_WIDTH - 0.2 * inch)],
             [_paragraph("ORIGINAL PHOTO", styles["panel_label"])],
         ]
         table = Table(rows, colWidths=[CONTENT_WIDTH], hAlign="LEFT", splitByRow=False)
-        table.setStyle(_photo_table_style())
+        table.setStyle(_photo_table_style(columns=1))
         return table
 
     annotated_image = annotate_photo(original_image, result.bbox)
@@ -511,27 +508,32 @@ def _photo_table(
         hAlign="LEFT",
         splitByRow=False,
     )
-    table.setStyle(_photo_table_style())
+    table.setStyle(_photo_table_style(columns=2))
     return table
 
 
-def _photo_table_style() -> TableStyle:
-    """Keep both photo previews and captions aligned with subtle borders."""
-    return TableStyle(
-        [
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("ALIGN", (0, 0), (-1, 0), "CENTER"),
-            ("BACKGROUND", (0, 0), (-1, -1), colors.white),
-            ("BOX", (0, 0), (-1, 0), 0.5, LINE),
-            ("LINEABOVE", (0, 1), (-1, 1), 0.35, LINE),
-            ("LEFTPADDING", (0, 0), (-1, -1), 2),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-            ("TOPPADDING", (0, 0), (-1, 0), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
-            ("TOPPADDING", (0, 1), (-1, 1), 0),
-            ("BOTTOMPADDING", (0, 1), (-1, 1), 0),
-        ]
-    )
+def _photo_table_style(columns: int = 2) -> TableStyle:
+    """Frame the photo previews as a card with a tinted caption strip."""
+    last = columns - 1
+    commands = [
+        ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
+        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 1), (-1, 1), PALE_GREEN),
+        ("BOX", (0, 0), (-1, -1), 0.6, LINE),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, LINE),
+        ("LEFTPADDING", (0, 0), (-1, 0), 4),
+        ("RIGHTPADDING", (0, 0), (-1, 0), 4),
+        ("TOPPADDING", (0, 0), (-1, 0), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ("LEFTPADDING", (0, 1), (-1, 1), 9),
+        ("RIGHTPADDING", (0, 1), (-1, 1), 9),
+        ("TOPPADDING", (0, 1), (-1, 1), 6),
+        ("BOTTOMPADDING", (0, 1), (-1, 1), 3),
+    ]
+    if last > 0:
+        commands.append(("LINEAFTER", (0, 0), (0, -1), 0.5, LINE))
+    return TableStyle(commands)
 
 
 def _manual_review_panel(styles: dict[str, ParagraphStyle]) -> Table:
@@ -554,14 +556,14 @@ def _append_voice_note(
     *,
     max_chars: int = 120,
 ) -> None:
-    """Include a compact voice-note chip and optional conflict note."""
+    """Include a compact voice-note card and optional conflict note."""
     if not transcript:
         return
     if len(transcript) <= max_chars:
         display = transcript
     else:
         display = transcript[: max_chars - 1].rstrip() + "…"
-    story.extend((Spacer(1, 10), _section_heading(styles, "Voice note")))
+    story.extend((Spacer(1, 12), _section_heading(styles, "Voice note"), Spacer(1, 5)))
     story.append(
         _section_band(
             styles,
@@ -572,6 +574,7 @@ def _append_voice_note(
         )
     )
     if report_text.voice_note_conflict:
+        story.append(Spacer(1, 6))
         story.append(
             _section_band(
                 styles,
@@ -685,7 +688,7 @@ def _needs_manual_review(result: InspectionResult) -> bool:
 
 
 def _outcome_palette(result: InspectionResult) -> tuple[colors.Color, colors.Color, colors.Color]:
-    """Return the background, accent, and badge text colors for the outcome card."""
+    """Return the background, accent, and on-accent text colors for the outcome card."""
     if _needs_manual_review(result):
         return WARNING, WARNING_BORDER, WARNING_INK
     if result.verdict == "defect" or result.grade == "Reject":
@@ -701,49 +704,59 @@ def _draw_page_chrome(
     user_type: ReportUserType,
     result: InspectionResult,
 ) -> None:
-    """Draw the branded header with status ribbon and the report footer."""
+    """Draw the branded header band with status stripe and the report footer."""
     page_width, page_height = A4
+    _, status_accent, _ = _outcome_palette(result)
+    stripe_color = LIME if status_accent == INK else status_accent
     canvas.saveState()
 
-    brand_y = page_height - 0.55 * inch
+    # Full-bleed dark header band with a status-coloured stripe underneath.
+    canvas.setFillColor(FOREST)
+    canvas.rect(0, page_height - HEADER_HEIGHT, page_width, HEADER_HEIGHT, fill=1, stroke=0)
+    canvas.setFillColor(stripe_color)
+    canvas.rect(0, page_height - HEADER_HEIGHT - 3, page_width, 3, fill=1, stroke=0)
+
+    # Logo mark and wordmark.
+    logo_size = 0.38 * inch
+    logo_y = page_height - HEADER_HEIGHT / 2 - logo_size / 2
     canvas.setFillColor(LIME)
-    canvas.roundRect(PAGE_MARGIN, brand_y, 0.34 * inch, 0.34 * inch, 0.1 * inch, fill=1, stroke=0)
-    canvas.setFillColor(INK)
-    canvas.setFont(BOLD_FONT_NAME, 14)
-    canvas.drawCentredString(PAGE_MARGIN + 0.17 * inch, brand_y + 0.1 * inch, "F")
-    canvas.setFont(BOLD_FONT_NAME, 10)
-    canvas.drawString(PAGE_MARGIN + 0.46 * inch, page_height - 0.4 * inch, "FIELDMARK")
-    canvas.setFillColor(MUTED)
+    canvas.roundRect(PAGE_MARGIN, logo_y, logo_size, logo_size, 0.11 * inch, fill=1, stroke=0)
+    canvas.setFillColor(FOREST)
+    canvas.setFont(BOLD_FONT_NAME, 15)
+    canvas.drawCentredString(PAGE_MARGIN + logo_size / 2, logo_y + 0.11 * inch, "F")
+    canvas.setFillColor(colors.white)
+    canvas.setFont(BOLD_FONT_NAME, 11)
+    canvas.drawString(PAGE_MARGIN + logo_size + 0.14 * inch, logo_y + 0.21 * inch, "FIELDMARK")
+    canvas.setFillColor(HEADER_SUBTLE)
     canvas.setFont(BOLD_FONT_NAME, 5.5)
     canvas.drawString(
-        PAGE_MARGIN + 0.46 * inch,
-        page_height - 0.51 * inch,
+        PAGE_MARGIN + logo_size + 0.14 * inch,
+        logo_y + 0.08 * inch,
         "PRODUCT QUALITY STUDIO",
     )
 
-    canvas.setFillColor(INK)
-    canvas.setFont(BOLD_FONT_NAME, 8)
-    canvas.drawRightString(page_width - PAGE_MARGIN, page_height - 0.39 * inch, "INSPECTION REPORT")
-    canvas.setFillColor(MUTED)
-    canvas.setFont(REGULAR_FONT_NAME, 6.2)
+    # Report title and metadata on the right.
+    canvas.setFillColor(LIME)
+    canvas.setFont(BOLD_FONT_NAME, 8.5)
+    canvas.drawRightString(
+        page_width - PAGE_MARGIN, logo_y + 0.23 * inch, "INSPECTION REPORT"
+    )
+    canvas.setFillColor(HEADER_SUBTLE)
+    canvas.setFont(REGULAR_FONT_NAME, 6.4)
     canvas.drawRightString(
         page_width - PAGE_MARGIN,
-        page_height - 0.51 * inch,
+        logo_y + 0.09 * inch,
         f"Report {report_id[:8].upper()}  ·  {_format_short_date(report_date)}  ·  "
         f"{USER_TYPE_LABELS[user_type]}",
     )
 
-    header_rule_y = page_height - 0.72 * inch
+    # Footer.
     canvas.setStrokeColor(LINE)
-    canvas.setLineWidth(0.5)
-    canvas.line(PAGE_MARGIN, header_rule_y, page_width - PAGE_MARGIN, header_rule_y)
+    canvas.setLineWidth(0.6)
+    canvas.line(PAGE_MARGIN, FOOTER_RULE_Y, page_width - PAGE_MARGIN, FOOTER_RULE_Y)
     canvas.setStrokeColor(LIME)
     canvas.setLineWidth(2)
-    canvas.line(PAGE_MARGIN, header_rule_y, PAGE_MARGIN + 1.1 * inch, header_rule_y)
-
-    canvas.setStrokeColor(LINE)
-    canvas.setLineWidth(0.5)
-    canvas.line(PAGE_MARGIN, FOOTER_RULE_Y, page_width - PAGE_MARGIN, FOOTER_RULE_Y)
+    canvas.line(PAGE_MARGIN, FOOTER_RULE_Y, PAGE_MARGIN + 0.9 * inch, FOOTER_RULE_Y)
     canvas.setFillColor(MUTED)
     canvas.setFont(REGULAR_FONT_NAME, 6.5)
     canvas.drawString(

@@ -2104,6 +2104,21 @@ main,
   background: rgba(32, 44, 36, 0.9);
 }
 
+:root[data-theme='dark'] .voice-record-card {
+  border-color: var(--line);
+  background: #26352b;
+}
+
+:root[data-theme='dark'] .mic-device-select {
+  border-color: var(--line);
+  background: #26352b;
+  color: var(--forest);
+}
+
+:root[data-theme='dark'] .mic-level-track {
+  background: #3a4b3e;
+}
+
 :root[data-theme='dark'] .empty-check,
 :root[data-theme='dark'] .result-panel .action-icon {
   color: #233b2d;
@@ -2870,6 +2885,45 @@ main,
 
 .recording-btn.active:hover {
   background: #fecaca;
+}
+
+.mic-device-row {
+  display: flex;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.mic-device-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted, #6b7280);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mic-device-select {
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  color: #111827;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.mic-device-active {
+  color: #166534;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .mic-level {
