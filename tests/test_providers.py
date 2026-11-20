@@ -1,18 +1,15 @@
 """Tests for configurable vision providers."""
 
 import json
-from io import BytesIO
 from unittest.mock import Mock, patch
-from urllib.error import URLError
 
 import pytest
 from google.genai import errors
 from PIL import Image
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
 from app.ai.produce_gemini import FINDING_SCHEMA, LOCALIZATION_SCHEMA, GeminiVisionDetector
 from app.ai.produce_groq import GroqVisionDetector
-from app.ai.produce_ollama import MAX_RESPONSE_BYTES, OllamaVisionDetector
 from app.ai.prompts import SYSTEM_PROMPT, get_localization_prompt, get_system_prompt
 from app.ai.provider_factory import create_vision_detector
 from app.ai.providers import DetectionError
@@ -61,27 +58,6 @@ def test_factory_selects_gemini_from_configuration() -> None:
     assert isinstance(detector, GeminiVisionDetector)
     assert detector.vision_model == "gemini-4-hydrogen"
     assert detector.localization_model == "gemini-3.5-flash-lite"
-
-
-def test_factory_selects_ollama_from_configuration() -> None:
-    """Select the local provider and use its configured endpoint and model."""
-    config = Settings.model_validate(
-        {
-            "vision_provider": "ollama",
-            "ollama_base_url": "http://ollama.local:11434",
-            "ollama_vision_model": "vision-test",
-        }
-    )
-    detector = create_vision_detector(config)
-    assert isinstance(detector, OllamaVisionDetector)
-    assert detector.base_url == "http://ollama.local:11434"
-    assert detector.model == "vision-test"
-
-
-def test_settings_reject_invalid_ollama_url() -> None:
-    """Reject non-HTTP endpoint configuration before serving requests."""
-    with pytest.raises(ValidationError, match="OLLAMA_BASE_URL"):
-        Settings.model_validate({"ollama_base_url": "file:///tmp/ollama"})
 
 
 def test_groq_without_api_key_fails_clearly() -> None:
@@ -233,24 +209,6 @@ def test_gemini_locate_defect_uses_localization_model_and_schema() -> None:
     assert bbox == (0.1, 0.2, 0.6, 0.7)
 
 
-def test_ollama_sends_image_and_parses_finding() -> None:
-    """Send a JSON-mode image request and validate the model finding."""
-    finding = {
-        "produce_type": "orange",
-        "condition": "fresh",
-        "confidence": 0.9,
-        "visual_observation": "The rind appears evenly colored.",
-    }
-    response_body = json.dumps({"message": {"content": json.dumps(finding)}}).encode()
-    detector = OllamaVisionDetector("http://localhost:11434", "vision-test")
-    with patch("app.ai.produce_ollama.urlopen", return_value=BytesIO(response_body)) as request:
-        result = detector(_image())
-    request_payload = json.loads(request.call_args.args[0].data)
-    assert request_payload["model"] == "vision-test"
-    assert request_payload["messages"][1]["images"]
-    assert result.produce_type == "orange"
-
-
 def _defective_finding() -> Finding:
     """Build a finding with a localized defect for provider tests."""
     return Finding(
@@ -277,44 +235,12 @@ def test_groq_locate_defect_returns_parsed_bbox() -> None:
     assert "locate" in user_text.lower()
 
 
-def test_ollama_locate_defect_returns_parsed_bbox() -> None:
-    """Parse the second-stage Ollama response into normalized coordinates."""
-    body = json.dumps({"message": {"content": '{"bbox": [0.2, 0.3, 0.7, 0.8]}'}}).encode()
-    detector = OllamaVisionDetector("http://localhost:11434", "vision-test")
-    with patch("app.ai.produce_ollama.urlopen", return_value=BytesIO(body)) as request:
-        bbox = detector.locate_defect(_image(), _defective_finding())
-    assert bbox == (0.2, 0.3, 0.7, 0.8)
-    payload = json.loads(request.call_args.args[0].data)
-    assert "locate" in payload["messages"][1]["content"].lower()
-
-
 def test_localization_ignores_malformed_bbox() -> None:
     """Discard coordinate sets that are not normalized and ordered."""
     from app.ai.schemas import DefectLocalization
 
     assert DefectLocalization.model_validate({"bbox": [0.9, 0.1, 0.2, 0.8]}).bbox is None
     assert DefectLocalization.model_validate({"bbox": [1.2, 0.1, 1.4, 0.8]}).bbox is None
-
-
-def test_ollama_network_failure_is_a_detection_error() -> None:
-    """Translate a local provider connection failure to the shared provider error."""
-    detector = OllamaVisionDetector("http://localhost:11434", "vision-test")
-    with (
-        patch("app.ai.produce_ollama.urlopen", side_effect=URLError("offline")),
-        pytest.raises(DetectionError, match="Local vision detection failed"),
-    ):
-        detector(_image())
-
-
-def test_ollama_rejects_oversized_response() -> None:
-    """Reject unusually large local model responses."""
-    detector = OllamaVisionDetector("http://localhost:11434", "vision-test")
-    large_response = BytesIO(b"x" * (MAX_RESPONSE_BYTES + 1))
-    with (
-        patch("app.ai.produce_ollama.urlopen", return_value=large_response),
-        pytest.raises(DetectionError, match="response exceeded the size limit"),
-    ):
-        detector(_image())
 
 
 def test_prompt_is_built_from_configured_categories() -> None:

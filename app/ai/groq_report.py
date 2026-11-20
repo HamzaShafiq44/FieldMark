@@ -1,4 +1,4 @@
-"""Groq transcription and structured inspection-report writing."""
+"""Structured inspection-report writing using the configured Groq model."""
 
 import json
 import logging
@@ -7,6 +7,7 @@ import groq
 from groq import Groq
 from pydantic import SecretStr, ValidationError
 
+from app.ai.errors import ReportAIError
 from app.ai.schemas import InspectionReportText, InspectionResult, ReportUserType
 from app.core.config import DEFAULT_GROQ_REPORT_MODEL, settings
 
@@ -45,28 +46,6 @@ REPORT_USER_PROMPT = (
 MODEL_UNAVAILABLE_MESSAGE = "The configured Groq model is unavailable."
 RATE_LIMITED_MESSAGE = "The Groq service is rate-limited; try again later."
 INVALID_REPORT_RESPONSE_MESSAGE = "The report model returned an invalid response format."
-
-
-class ReportAIError(RuntimeError):
-    """Raised when Groq cannot transcribe audio or write a valid report."""
-
-
-def transcribe_voice_note(data: bytes, filename: str) -> str:
-    """Transcribe an optional voice note without logging its contents."""
-    client = _groq_client(settings.groq_api_key)
-    try:
-        response = client.audio.transcriptions.create(
-            model=settings.groq_transcription_model,
-            file=(filename, data),
-            response_format="json",
-            temperature=0,
-        )
-    except groq.APIError as exc:
-        raise _provider_failure(exc, "Voice-note transcription") from exc
-    transcript = response.text.strip()
-    if not transcript:
-        raise ReportAIError("Voice-note transcription returned no text.")
-    return transcript
 
 
 def write_inspection_report(

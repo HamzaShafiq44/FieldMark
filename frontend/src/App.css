@@ -693,6 +693,12 @@ main,
   cursor: not-allowed;
 }
 
+/* The photo panel uses .supported-row and the category form uses grid gap for
+   this spacing; the voice panel needs it explicitly. */
+.voice-panel .inspect-button {
+  margin-top: 18px;
+}
+
 .button-caption {
   display: flex;
   align-items: center;
@@ -2081,6 +2087,12 @@ main,
   background: #26352b;
 }
 
+/* --forest-2 becomes light in dark mode, so the active chip's count badge
+   would be light text on the light lime badge background. */
+:root[data-theme='dark'] .history-filter-chip.is-active span {
+  color: #1d3828;
+}
+
 :root[data-theme='dark'] .supported-fruit,
 :root[data-theme='dark'] .supported-row > span,
 :root[data-theme='dark'] .upload-formats,
@@ -2264,7 +2276,7 @@ main,
 }
 
 .category-notice {
-  margin: 0;
+  margin: 0 0 16px;
   padding: 10px 13px;
   border: 1px solid rgba(255, 223, 154, 0.3);
   border-radius: 11px;
@@ -3001,4 +3013,19 @@ main,
   font-style: italic;
   font-size: 14px;
   line-height: 1.5;
+}
+
+/* The transcript quote card lives inside the always-dark result panel. Its
+   light-mode background is hardcoded, so without this override the text (which
+   becomes light via --forest in dark mode) would be light-on-light. */
+:root[data-theme='dark'] .transcript-section {
+  background: rgba(32, 44, 36, 0.72);
+}
+
+/* Same treatment for the quiet-recording warning so it doesn't stay a bright
+   light box when the rest of the voice-note UI is dark. */
+:root[data-theme='dark'] .voice-warning {
+  border-color: rgba(253, 230, 138, 0.24);
+  background: rgba(253, 230, 138, 0.08);
+  color: #fcd34d;
 }

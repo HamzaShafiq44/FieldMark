@@ -15,7 +15,7 @@ import groq
 from groq import Groq
 from pydantic import ValidationError
 
-from app.ai.groq_report import ReportAIError
+from app.ai.errors import ReportAIError
 from app.ai.schemas import Condition, DefectType, Finding, Severity
 from app.core.config import DEFAULT_GROQ_REPORT_MODEL, settings
 from app.services.category_service import ALLOWED_FRUITS

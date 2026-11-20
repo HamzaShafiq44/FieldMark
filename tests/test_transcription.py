@@ -1,4 +1,4 @@
-"""Tests for voice-note transcription provider selection."""
+"""Tests for Gemini 3.5 Transcribe voice-note handling."""
 
 from unittest.mock import Mock, patch
 
@@ -6,7 +6,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.ai import gemini_transcribe, transcription
-from app.ai.groq_report import ReportAIError
+from app.ai.errors import ReportAIError
 from app.core.config import settings
 
 
@@ -89,35 +89,20 @@ def test_gemini_transcription_requires_api_key(monkeypatch: pytest.MonkeyPatch) 
         gemini_transcribe.transcribe_voice_note(b"audio", "note.wav")
 
 
-def test_gemini_transcription_falls_back_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Use Groq Whisper when Gemini produces no text."""
+def test_gemini_transcription_rejects_empty_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail clearly when the transcriber returns no text; there is no fallback provider."""
     monkeypatch.setattr(settings, "gemini_api_key", SecretStr("test-key"))
     client = _mock_client("   ")
     with (
         patch.object(gemini_transcribe.genai, "Client", return_value=client),
-        patch.object(gemini_transcribe, "transcribe_with_groq", return_value="groq text") as groq,
+        pytest.raises(ReportAIError, match="No speech could be detected"),
     ):
-        result = gemini_transcribe.transcribe_voice_note(b"audio", "note.wav")
-    groq.assert_called_once_with(b"audio", "note.wav")
-    assert result == "groq text"
+        gemini_transcribe.transcribe_voice_note(b"audio", "note.wav")
 
 
-def test_dispatcher_selects_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Use Gemini when transcription_provider is gemini."""
-    monkeypatch.setattr(settings, "transcription_provider", "gemini")
-    with patch.object(transcription, "transcribe_with_gemini", return_value="gemini") as gemini:
-        result = transcription.transcribe_voice_note(b"audio", "note.wav")
-    gemini.assert_called_once_with(b"audio", "note.wav")
-    assert result == "gemini"
-
-
-def test_dispatcher_selects_groq(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Use Groq when transcription_provider is groq."""
-    monkeypatch.setattr(settings, "transcription_provider", "groq")
-    with patch.object(transcription, "transcribe_with_groq", return_value="groq") as groq:
-        result = transcription.transcribe_voice_note(b"audio", "note.wav")
-    groq.assert_called_once_with(b"audio", "note.wav")
-    assert result == "groq"
+def test_transcription_entry_point_uses_gemini() -> None:
+    """Expose Gemini as the single transcription entry point for inspections."""
+    assert transcription.transcribe_voice_note is gemini_transcribe.transcribe_voice_note
 
 
 def test_voice_inspection_uses_dispatcher(

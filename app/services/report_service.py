@@ -7,7 +7,9 @@ from uuid import uuid4
 from pydantic import ValidationError
 from reportlab.platypus.doctemplate import LayoutError
 
-from app.ai.groq_report import ReportAIError, transcribe_voice_note, write_inspection_report
+from app.ai.errors import ReportAIError
+from app.ai.gemini_transcribe import transcribe_voice_note
+from app.ai.groq_report import write_inspection_report
 from app.ai.schemas import (
     InspectionReportText,
     InspectionResult,

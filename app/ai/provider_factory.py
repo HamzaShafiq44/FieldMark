@@ -2,7 +2,6 @@
 
 from app.ai.produce_gemini import GeminiVisionDetector
 from app.ai.produce_groq import GroqVisionDetector
-from app.ai.produce_ollama import OllamaVisionDetector
 from app.ai.providers import VisionDetector
 from app.core.config import Settings, settings
 
@@ -23,12 +22,6 @@ def create_vision_detector(
         return GroqVisionDetector(
             selected_settings.groq_api_key,
             selected_settings.groq_vision_model,
-            supported_types=supported_types,
-        )
-    if selected_settings.vision_provider == "ollama":
-        return OllamaVisionDetector(
-            selected_settings.ollama_base_url,
-            selected_settings.ollama_vision_model,
             supported_types=supported_types,
         )
     if selected_settings.vision_provider == "gemini":

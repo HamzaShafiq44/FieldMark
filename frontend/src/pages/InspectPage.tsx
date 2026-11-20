@@ -23,7 +23,6 @@ import {
   classifyInspectionResult,
   clearInspectionHistory,
   type Verdict,
-  createInspectionReport,
   downloadInspectionReport,
   inspectionAnnotatedUrl,
   inspectionOriginalUrl,
@@ -804,28 +803,6 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
     setError(null)
   }
 
-  const handleUpdateReportWithVoiceNote = async (inspectionId: string, voiceNote: File) => {
-    if (reportActionId) return
-    setReportActionId(inspectionId)
-    setReportError(null)
-    try {
-      const pdf = await createInspectionReport(inspectionId, voiceNote)
-      downloadPdf(pdf, inspectionId)
-      setResult((current) =>
-        current && current.inspection_id === inspectionId
-          ? { ...current, report_available: true }
-          : current,
-      )
-      setVoiceNoteFile(null)
-      if (voiceNoteInput.current) voiceNoteInput.current.value = ''
-      void refreshHistory()
-    } catch (caught: unknown) {
-      setReportError(caught instanceof Error ? caught.message : 'PDF report could not be updated.')
-    } finally {
-      setReportActionId(null)
-    }
-  }
-
   const handleRelocateDefect = async (inspectionId: string) => {
     if (relocationId) return
     setRelocationId(inspectionId)
@@ -1217,7 +1194,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
               {voiceWarning}
             </p>
           )}
-          
+
           <button
             className="inspect-button"
             type="button"
@@ -1462,57 +1439,27 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                       : result.report_available
                         ? isVoiceOnlyResult
                           ? 'Your PDF is ready with the grade and transcript from your voice note.'
-                          : 'Your PDF is ready. Add a short voice note to update it with spoken context.'
+                          : 'Your PDF is ready.'
                         : 'The PDF could not be created for this inspection.'}
                   </p>
                 </div>
                 {result.report_available && !isUnsupportedItem && (
-                  <>
-                    <button
-                      className="report-button"
-                      type="button"
-                      onClick={() => void handleDownloadReport(result.inspection_id)}
-                      disabled={reportActionId !== null}
-                    >
-                      {reportActionId === result.inspection_id ? (
-                        <>
-                          <LoaderCircle className="spin" size={16} /> Preparing PDF
-                        </>
-                      ) : (
-                        <>
-                          <Download size={16} /> Download PDF
-                        </>
-                      )}
-                    </button>
-                    {!isVoiceOnlyResult && (
+                  <button
+                    className="report-button"
+                    type="button"
+                    onClick={() => void handleDownloadReport(result.inspection_id)}
+                    disabled={reportActionId !== null}
+                  >
+                    {reportActionId === result.inspection_id ? (
                       <>
-                        <label>
-                          Add a voice note to update the report
-                          <input
-                            ref={voiceNoteInput}
-                            type="file"
-                            accept="audio/*"
-                            onChange={(event) => {
-                              const selected = event.currentTarget.files?.[0] ?? null
-                              setReportError(null)
-                              if (!selected) return
-                              if (selected.size > MAX_VOICE_NOTE_BYTES) {
-                                setVoiceNoteFile(null)
-                                setReportError(
-                                  'Voice note is over 25 MB. Choose a smaller audio file.',
-                                )
-                                event.currentTarget.value = ''
-                                return
-                              }
-                              setVoiceNoteFile(selected)
-                              void handleUpdateReportWithVoiceNote(result.inspection_id, selected)
-                            }}
-                          />
-                        </label>
-                        {voiceNoteFile && <p className="report-file-name">{voiceNoteFile.name}</p>}
+                        <LoaderCircle className="spin" size={16} /> Preparing PDF
+                      </>
+                    ) : (
+                      <>
+                        <Download size={16} /> Download PDF
                       </>
                     )}
-                  </>
+                  </button>
                 )}
                 {!result.report_available && (
                   <p className="report-unavailable">Report unavailable.</p>

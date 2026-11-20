@@ -7,8 +7,7 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 
-from app.ai.groq_report import ReportAIError
-from app.ai.groq_report import transcribe_voice_note as transcribe_with_groq
+from app.ai.errors import ReportAIError
 from app.core.config import settings
 
 LOGGER = logging.getLogger(__name__)
@@ -47,7 +46,7 @@ def _response_text(response: object) -> str:
 
 
 def transcribe_voice_note(data: bytes, filename: str) -> str:
-    """Transcribe voice audio with Gemini, falling back to Groq if empty."""
+    """Transcribe voice audio with Gemini 3.5 Transcribe."""
     key = settings.gemini_api_key.get_secret_value()
     if not key:
         raise ReportAIError("GEMINI_API_KEY is not configured.")
@@ -71,11 +70,14 @@ def transcribe_voice_note(data: bytes, filename: str) -> str:
         if transcript:
             return transcript
         LOGGER.warning(
-            "Gemini transcription returned no text (status=%s); falling back to Groq.",
+            "Gemini transcription returned no text (status=%s).",
             getattr(response, "status", None),
         )
     except genai.errors.APIError as exc:
-        LOGGER.error("Gemini transcription failed (%s); falling back to Groq.", type(exc).__name__)
+        LOGGER.error("Gemini transcription failed (%s).", type(exc).__name__)
+        raise ReportAIError(
+            "Speech transcription is unavailable. Check the Gemini configuration and try again."
+        ) from exc
     finally:
         if uploaded is not None and uploaded.name:
             try:
@@ -83,9 +85,6 @@ def transcribe_voice_note(data: bytes, filename: str) -> str:
             except (genai.errors.APIError, AttributeError, TypeError):
                 LOGGER.warning("Could not delete uploaded transcription file.")
 
-    try:
-        return transcribe_with_groq(data, filename)
-    except ReportAIError as exc:
-        raise ReportAIError(
-            "No speech could be detected in the voice note. Record a longer, clear message."
-        ) from exc
+    raise ReportAIError(
+        "No speech could be detected in the voice note. Record a longer, clear message."
+    )

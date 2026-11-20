@@ -1,4 +1,4 @@
-# Architecture — Fieldmark
+# Architecture — Visual Defect Inspector
 
 Software-only product grading for farmers. A photo goes in, a validated AI finding and
 deterministic grading rules come out as a verdict, quality grade, and recommended action, and an
@@ -10,18 +10,139 @@ first-time readers.
 
 **Goals.** Let a farmer upload or capture a product photo, receive a pass/defect verdict with a
 confidence score and a plain-language explanation, keep a local inspection history, and download
-a professional PDF report — generated automatically, with an optional voice note added afterwards.
+a professional PDF report — generated automatically, with optional voice-note context captured at
+inspection time.
 
 **Non-goals (out of scope per the project SOW).** Hardware and sensors, user accounts,
 multi-tenancy, payments, production deployment and scaling, and training models from scratch.
-Inference uses a hosted API model (Groq or Google Gemini) with an optional local Ollama provider behind the same
-interface.
+Inference uses a hosted API model (Groq or Google Gemini) behind a swappable provider interface.
 
 **Chosen user type.** Farmer (product grading after harvest): bruises, rot, mold, and deformities
 on photos of the configured inspection categories, with quality grades (A / B / Reject) and
 sell-or-discard advice.
 
-## 2. System context
+## 2. Technology stack
+
+### 2.1 Backend
+
+- **Python 3.12+**, managed with `uv` (`pyproject.toml`, `uv.lock`); no pip.
+- **FastAPI** is the HTTP framework. `app/main.py` creates the app, installs CORS middleware for
+  `FRONTEND_ORIGIN`, and mounts two `APIRouter`s. Routes declare typed `Annotated` parameters
+  (`File()`, `Form()`, `Query()`), use `UUID` path parameters and `response_model` for responses,
+  and map domain errors to `HTTPException` status codes. Blocking work — image validation, SQLite,
+  and AI calls — is offloaded with `run_in_threadpool` so the event loop stays responsive.
+- **Pydantic v2** validates every model response and API payload in `app/ai/schemas.py`
+  (`extra="forbid"`, value bounds, enums). **pydantic-settings** `BaseSettings` in
+  `app/core/config.py` loads typed settings from the environment and `.env`, with API keys held as
+  `SecretStr`.
+- **AI clients**: the `groq` SDK (vision and report writing) and the `google-genai` SDK (vision and
+  Gemini 3.5 Transcribe), both behind the `VisionDetector` callable protocol in
+  `app/ai/providers.py`.
+- **Pillow** validates and decodes uploads, writes thumbnails, and draws bounding boxes on annotated
+  photos. **ReportLab** builds the one-page PDF with `SimpleDocTemplate`, platypus `Flowable`s, and
+  direct `Canvas` drawing (`app/reports/pdf_renderer.py`).
+- **PyYAML** loads the allowed-fruit list in `app/services/category_service.py`;
+  **python-multipart** enables multipart upload parsing.
+- **Uvicorn** serves the ASGI app (`uv run uvicorn app.main:app --reload` locally; the container runs
+  it as a non-root user).
+- **Quality tooling**: ruff (lint and format), pyright (types), pytest + pytest-cov, and httpx for
+  API tests.
+
+### 2.2 Frontend
+
+- **TypeScript and React 19** with strict compiler options (`noUnusedLocals`, `noUnusedParameters`),
+  so unused imports and variables fail the build.
+- **Vite 8** with `@vitejs/plugin-react` builds the bundle (`tsc -b && vite build`). In development
+  the Vite server proxies `/health`, `/inspections`, and `/api` to `http://127.0.0.1:8000`; in Docker
+  the built bundle is served with `vite preview`.
+- **React Router v7** provides the two client-side routes: `main.tsx` installs `BrowserRouter` and
+  `App.tsx` maps `/` to `InspectPage` and `/categories` to `CategoriesPage`. SPA fallback for a
+  direct `/categories` refresh comes from the Vite dev server or the `vite preview` container; the
+  FastAPI process serves only API routes and `/health`.
+- **lucide-react** supplies icons; styling is plain CSS (`index.css`, `App.css`) — no CSS framework.
+- **API layer**: every backend call goes through `frontend/src/services/api.ts` (inspections,
+  reports, history, health) and `frontend/src/services/categories.ts`, using typed response models,
+  a shared `ApiError`, a base-URL helper driven by `VITE_API_BASE_URL`, and a 90-second
+  `AbortController` timeout for inspection requests.
+- **Quality tooling**: ESLint + oxlint for linting, Prettier for formatting, and the TypeScript
+  compiler as a build gate.
+
+### 2.3 Database and file storage
+
+- **SQLite** through Python's standard `sqlite3` module. One database file,
+  `data/inspections.sqlite3` by default (`INSPECTION_DB_PATH` overrides it), with three tables:
+  `inspections`, `product_categories`, and `inspection_reports` (see §7). All queries are
+  parameterized; the schema is created and migrated lazily on the first connection.
+- **Filesystem storage**: original photos, thumbnails, and annotated JPEGs live in `data/images/`;
+  SQLite stores only relative paths. PDF files are never persisted — each report is rebuilt from
+  its stored narrative and evidence image at download time.
+- **Deployment**: Docker Compose bind-mounts host `./data` at `/app/data`, so history survives
+  container restarts and rebuilds. SQLite is intentionally single-instance (see §16).
+
+### 2.4 Framework implementation map
+
+| Framework / library | Role | How it is used here |
+|---|---|---|
+| FastAPI + Uvicorn | HTTP API and ASGI server | Two `APIRouter`s, typed request/response models, `HTTPException` mapping, threadpool offload |
+| Pydantic / pydantic-settings | Contracts and configuration | LLM output validation, `SecretStr` keys, environment-driven `Settings` |
+| Groq / google-genai SDKs | Hosted AI providers | Swappable `VisionDetector` implementations, report writer, Gemini transcription |
+| Pillow | Image processing | Format/verify/decompression-bomb checks, thumbnails, bounding-box annotation |
+| ReportLab | PDF rendering | One-page A4 report with custom `Flowable`s and `Canvas` drawing |
+| PyYAML | Category allowlist | Loads `fruits.yaml` for category validation |
+| sqlite3 | Persistence | Parameterized queries and lazy schema migration |
+| React + React Router | Web UI | Two pages, client-side routing, loading/empty/error states |
+| Vite | Build and dev proxy | Bundles TypeScript and proxies API calls during development |
+| pytest / ruff / pyright | Backend quality gates | Deterministic mocked tests, lint/format, static typing |
+| ESLint / oxlint / Prettier | Frontend quality gates | Linting and formatting checks |
+| Docker Compose | Local deployment | Two containers, runtime `.env`, persistent `./data` volume |
+
+## 3. Feature list
+
+### 3.1 Inspection
+
+- **Photo input**: upload an image or capture one with the device camera in the browser
+  (`InspectPage.tsx`, `POST /inspections/product`).
+- **Voice input**: record a voice note in the browser or upload an audio file; Gemini 3.5 Transcribe
+  produces the transcript. Voice-only inspections use the same endpoint without a photo.
+- **AI finding**: the configured vision provider returns a schema-validated `Finding` with the
+  detected product, edibility, condition, confidence, defect types, severity, visual observation,
+  and bounding box.
+- **Verdict and grade**: deterministic rules produce `pass` / `defect` / `needs_review`, a quality
+  grade (A / B / Reject / Needs manual review), plain-language verdict notes, and a recommended next
+  action suited to a farmer (sell, discard, or re-inspect). The confidence score is returned by the
+  API and drawn in the PDF; the web result panel does not yet display it (see §16).
+- **Defect location**: the analysis bounding box, optionally refined by a second-stage localization
+  call, is drawn into a saved annotated JPEG and shown in the PDF.
+- **Outside-category products**: edible products outside the active categories are graded normally
+  and flagged as out of category; non-edible items are shown as unsupported with no grade.
+- **PDF report**: every edible product gets an automatically generated AI narrative with a
+  deterministic fallback. The one-page PDF includes the report ID, date, user type, original and
+  annotated photos, verdict, confidence, defect types, severity, findings, and next steps, and is
+  rebuilt on download. A voice note's transcript and context are folded into the narrative; a
+  contradiction between audio and photo is called out instead of being silently resolved.
+
+### 3.2 History and categories
+
+- **Inspection history**: a reverse-chronological, paginated list with thumbnail, date, produce
+  type, verdict, grade, transcript, and report availability, plus thumbnail/original/annotated
+  image endpoints and a clear-history action that removes rows and images.
+- **Category management**: list, create, rename, enable, disable, and delete products with an
+  optional emoji; four seeded defaults; guards that keep at least one category active and prevent
+  deleting a category referenced by saved inspections.
+- **Defect relocation**: an API action to re-locate the defect on older inspections that have no
+  stored bounding box.
+
+### 3.3 Platform
+
+- **Swappable vision provider** selected with `VISION_PROVIDER` (Groq or Gemini) behind one interface.
+- **Environment-driven configuration** with a committed `.env.example`, `SecretStr` key handling,
+  and input size/format limits.
+- **Single-command Docker deployment** with a backend healthcheck and a persistent history volume.
+- **Interactive API docs** at `/docs` and a `/health` endpoint.
+- **Automated checks**: 119 tests with mocked AI clients, a coverage report, and lint/format/type
+  gates (see §15).
+
+## 4. System context
 
 ```mermaid
 flowchart LR
@@ -30,20 +151,22 @@ flowchart LR
     API --> SVC["Inspection service"]
     API --> RPT["Report service"]
     SVC --> DET["VisionDetector"]
-    DET --> Groq["Groq API"]
-    DET --> Gemini["Gemini API (optional)"]
-    DET --> Ollama["Ollama (optional)"]
-    RPT --> ReportAI["Groq report + Whisper"]
+    DET --> Groq["Groq API (vision)"]
+    DET --> Gemini["Gemini API (vision)"]
+    SVC --> TRANS["Gemini 3.5 Transcribe"]
+    RPT --> TRANS
+    RPT --> ReportAI["Groq report writer"]
     SVC --> DB[("SQLite")]
     RPT --> DB
     RPT --> PDF["PDF renderer (reportlab)"]
 ```
 
-The browser talks only to the FastAPI process, which in turn talks to exactly one configured
-vision provider. Groq is the default; Gemini (free tier, structured JSON schemas) and Ollama are optional
-exists for the optional local-model path and is never selected automatically.
+The browser talks only to the FastAPI process. Groq is the default vision provider and Gemini
+(free tier, structured JSON schemas) is the optional alternative; the application never silently
+switches providers. Voice-note transcription always uses Gemini 3.5 Transcribe, regardless of the
+selected vision provider.
 
-## 3. Components
+## 5. Components
 
 | Path | Responsibility |
 |---|---|
@@ -55,23 +178,23 @@ exists for the optional local-model path and is never selected automatically.
 | `app/ai/provider_factory.py` | Builds the configured `VisionDetector` from settings (no network at construction) |
 | `app/ai/produce_groq.py` | Groq vision provider: base64 image prompt, JSON-mode response, schema validation |
 | `app/ai/produce_gemini.py` | Gemini provider: structured JSON schemas for analysis and defect localization |
-| `app/ai/produce_ollama.py` | Local Ollama provider: stdlib HTTP client, response size cap, schema validation |
-| `app/ai/groq_report.py` | Whisper transcription (report voice notes) and one-shot report writing with validated JSON output |
-| `app/ai/gemini_transcribe.py` | Gemini 3.5 Transcribe for voice-note-only inspections |
-| `app/ai/transcription.py` | Provider dispatcher for voice-note-only inspection transcription |
+| `app/ai/groq_report.py` | One-shot report writing with validated JSON output |
+| `app/ai/gemini_transcribe.py` | Gemini 3.5 Transcribe for all voice notes (inspections and PDF reports) |
+| `app/ai/transcription.py` | Single transcription entry point (Gemini) used by voice-only inspections |
+| `app/ai/errors.py` | Shared `ReportAIError` for transcription and report-writing failures |
 | `app/ai/schemas.py` | Pydantic contracts: `Finding`, `InspectionResult`, `InspectionReportText`, history models |
 | `app/ai/prompts.py` | System/user prompts for the vision model, including injection-hardening rules |
 | `app/reports/pdf_renderer.py` | One-page reportlab PDF: metadata, evidence photos, quick-scan card, narrative |
 | `app/storage/inspection_repository.py` | Parameterized SQLite access, image/report paths, schema migration |
 | `app/storage/category_repository.py` | Category persistence and default seeding in SQLite |
-| `app/core/config.py` | Environment-driven `Settings` with URL validation |
+| `app/core/config.py` | Environment-driven `Settings` for providers, models, limits, and storage paths |
 | `frontend/src/services/api.ts` | Inspection API boundary: typed calls, `ApiError`, URL building |
 | `frontend/src/services/categories.ts` | Category API calls and types |
 | `frontend/src/App.tsx` | App shell, navigation, theme, API status, routes |
-| `frontend/src/pages/InspectPage.tsx` | Upload/camera, result panel, report controls, history, clear |
+| `frontend/src/pages/InspectPage.tsx` | Upload/camera, result panel, report download, history, clear |
 | `frontend/src/pages/CategoriesPage.tsx` | Category list, add/rename/enable/disable/delete |
 
-## 4. Data flow
+## 6. Data flow
 
 ### 4.1 Inspection
 
@@ -132,12 +255,13 @@ sequenceDiagram
 Every edible product, including fruit outside the inspection categories, gets the same report
 layout. Non-edible items get no PDF. When AI report writing fails, the deterministic narrative is
 used instead; if that fallback also fails, no report row is stored and the interface shows the
-report as unavailable.
+report as unavailable. When a voice note is present, Gemini 3.5 Transcribe produces the transcript
+that is folded into the narrative; the report writer treats that text as untrusted evidence.
 
 The PDF itself is not stored. `GET /inspections/{id}/report` rebuilds it from the saved narrative,
-result, and original photo on every download. Adding a voice note calls
-`POST /inspections/{id}/report`, which replaces the stored narrative with a narrated version and
-returns the rebuilt PDF as a download.
+result, and original photo on every download. The API also accepts `POST /inspections/{id}/report`
+with a voice note: Gemini transcribes it, the stored narrative is replaced with a narrated version,
+and the rebuilt PDF is returned as a download. The web UI does not expose this update action.
 
 
 ### 4.3 History and clearing
@@ -146,7 +270,7 @@ returns the rebuilt PDF as a download.
 `report_source_available` flags. `DELETE /inspections/history` deletes database rows and removes
 the `images/` and `reports/` directories. `GET .../thumbnail` streams the 192×192 JPEG preview.
 
-## 5. Data model
+## 7. Data model
 
 Single SQLite file (default `data/inspections.sqlite3`), created and migrated lazily on first
 connection. All queries are parameterized.
@@ -202,7 +326,7 @@ than fabricated.
 with the thumbnail and original photo on disk. Clearing history deletes the report and image
 directories along with the database rows. Images are never stored as BLOBs in SQLite.
 
-## 6. API surface
+## 8. API surface
 
 | Method | Path | Success | Client errors | Provider/server errors |
 |---|---|---|---|---|
@@ -223,38 +347,36 @@ directories along with the database rows. Images are never stored as BLOBs in SQ
 Route parameters are typed as `UUID`, so malformed identifiers are rejected by FastAPI before
 reaching the service layer.
 
-## 7. AI abstraction and model swap
+## 9. AI abstraction and model swap
 
 ```mermaid
 flowchart LR
     Settings["Settings (env)"] --> Factory["provider_factory.create_vision_detector()"]
     Factory -->|"VISION_PROVIDER=groq"| G["GroqVisionDetector"]
     Factory -->|"VISION_PROVIDER=gemini"| Gm["GeminiVisionDetector"]
-    Factory -->|"VISION_PROVIDER=ollama"| O["OllamaVisionDetector"]
     G --> Finding["Finding (validated)"]
-    O --> Finding
+    Gm --> Finding
 ```
 
 - `VisionDetector` is a callable protocol (`__call__(image) -> Finding`) in `app/ai/providers.py`;
   both providers implement it and raise `DetectionError` on failure.
-- **Groq** (`meta-llama/llama-4-scout-17b-16e-instruct` by default) receives a base64 JPEG with
+- **Groq** (`qwen/qwen3.8-27b` by default) receives a base64 JPEG with
   `response_format={"type": "json_object"}` and temperature 0 for determinism.
 - **Gemini** sends an inline JPEG with `responseMimeType=application/json` and a `responseSchema`
   for both calls; `gemini-4-hydrogen` analyzes and `gemini-3.5-flash-lite` localizes the defect.
-- **Ollama** posts to `{base_url}/api/chat` with `format=json`, a 120 s timeout, and a 64 KB
-  response cap. It is opt-in (`VISION_PROVIDER=ollama`) and never a silent fallback.
-- **Report path.** `GROQ_TRANSCRIPTION_MODEL` (Whisper) transcribes voice notes attached to reports;
-  the report writer defaults to the vision model when `GROQ_REPORT_MODEL` is unset.
-- **Voice-note-only inspection path.** `TRANSCRIPTION_PROVIDER` selects Gemini (default, via
-  `client.files.upload` + `client.interactions.create` on `gemini-3.5-transcribe`, with the uploaded
-  file deleted afterwards) or Groq Whisper. Its transcript is stored on the result without an image.
+- **Report path.** The report writer uses `GROQ_REPORT_MODEL` (default `openai/gpt-oss-20b`).
+  Voice notes attached to reports are transcribed by the same Gemini path used for inspections.
+- **Transcription path.** All voice notes use `GEMINI_TRANSCRIPTION_MODEL`
+  (`gemini-3.5-transcribe` by default) via `client.files.upload` + `client.interactions.create`;
+  the uploaded file is deleted afterwards. There is no provider switch and no Groq Whisper fallback.
+  The transcript is stored on the result and passed to the report writer as untrusted evidence.
 - **Validation.** Model output is never trusted: `Finding` bounds confidence to [0, 1], discards
   non-normalized or unordered bounding boxes, and caps `visual_observation` at 240 characters.
   `InspectionReportText` forbids extra fields and cross-checks the voice-note relation: a
   `conflicts` relation requires a non-empty explanation, and an explanation without a conflict is
   rejected.
 
-## 8. Deterministic grading rules
+## 10. Deterministic grading rules
 
 All thresholds are constants in `inspection_service.py`; the model only reports observations.
 
@@ -276,7 +398,7 @@ model-reported confidence percentages. The vision model reports `detected_item` 
 `item_is_fruit`; the service sets `in_inspection_categories` so the interface can show a normal
 result for any edible product and a plain "Unsupported item" result for everything else.
 
-## 9. Error handling
+## 11. Error handling
 
 | Layer | Failure | Handling |
 |---|---|---|
@@ -284,17 +406,17 @@ result for any edible product and a plain "Unsupported item" result for everythi
 | Service | Bad image (format, verify, decompression bomb, OS) | `InvalidImageError` → 400, logged |
 | Provider | Groq API error, invalid JSON, missing key | `DetectionError` → 502, logged |
 | Provider | Gemini API/invalid structured JSON/missing key | `DetectionError` → 502, logged |
-| Provider | Ollama network/timeout/oversize | `DetectionError` → 502 |
+| Transcription | Gemini API error, missing key, empty/silent audio | `ReportAIError` with an actionable message |
 | Report AI | Model unavailable, rate-limited, invalid JSON, no response | Distinct actionable messages → 502 |
 | Report AI | Contradiction between transcript and visual result | Required conflict explanation, validated |
 | Service | Transcript longer than 800 characters | 400 with a clear message |
 | Storage | Any `sqlite3.Error` / `OSError` | `HistoryStorageError` → 500, logged |
 | PDF | Layout/render errors (`LayoutError`, `OSError`) | `InspectionReportError` → 500 |
 
-Rules applied throughout: no bare excepts, no swallowed exceptions, `raise ... from exc` chaining,
-module loggers (never `print`), exception *types* logged but never keys or personal data.
+Errors are chained with `raise ... from exc` and logged through module loggers (never `print`).
+Logs record exception *types*, never keys or personal data.
 
-## 10. Security boundaries
+## 12. Security boundaries
 
 - **Secrets** live only in environment variables / the local `.env`; `.env` is gitignored and
   excluded from the Docker build context. The Docker image contains no key material.
@@ -311,29 +433,25 @@ module loggers (never `print`), exception *types* logged but never keys or perso
   memory, database paths come from configuration, and route parameters are UUIDs.
 - **No `eval` / `pickle`** on user data; JSON only.
 
-## 11. Configuration
+## 13. Configuration
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VISION_PROVIDER` | `groq` | `groq`, `ollama`, or `gemini` |
-| `GROQ_API_KEY` | *(empty)* | Required for Groq vision, report writing, and transcription |
+| `VISION_PROVIDER` | `groq` | `groq` or `gemini` |
+| `GROQ_API_KEY` | *(empty)* | Required for Groq vision and report writing |
 | `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Vision model |
 | `GROQ_REPORT_MODEL` | `openai/gpt-oss-20b` | Report narrative model |
-| `GROQ_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Voice notes attached to PDF reports |
-| `TRANSCRIPTION_PROVIDER` | `gemini` | `gemini` or `groq` for voice-note-only inspections |
-| `GEMINI_TRANSCRIPTION_MODEL` | `gemini-3.5-transcribe` | Voice-note-only inspection transcription |
-| `GEMINI_API_KEY` | *(empty)* | Required for the Gemini provider |
+| `GEMINI_API_KEY` | *(empty)* | Required for Gemini vision and all voice-note transcription |
+| `GEMINI_TRANSCRIPTION_MODEL` | `gemini-3.5-transcribe` | Transcription model for all voice notes |
 | `GEMINI_VISION_MODEL` | `gemini-4-hydrogen` | Analysis model |
 | `GEMINI_LOCALIZATION_MODEL` | `gemini-3.5-flash-lite` | Second-stage defect box model |
 | `GEMINI_FALLBACK_MODELS` | `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite` | Tried on transient model errors |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Validated absolute HTTP(S) URL |
-| `OLLAMA_VISION_MODEL` | `qwen2.5vl:7b` | Local vision model |
 | `INSPECTION_DB_PATH` | `data/inspections.sqlite3` | Absolute in Docker (`/app/data/...`) |
 | `FRONTEND_ORIGIN` | `http://localhost:3000` | Allowed CORS origin for the separate frontend |
 | `VITE_API_BASE_URL` | `http://localhost:8000` | API URL baked into the frontend at build time |
 | `WEB_PORT` | `3000` | Host port for the frontend container |
 
-## 12. Deployment
+## 14. Deployment
 
 Two containers, two origins. The backend image installs locked Python dependencies with `uv` and
 runs Uvicorn as non-root user `inspector` (uid 10001); it serves only API routes and `/health`. The
@@ -350,32 +468,36 @@ fallback for routes such as `/categories`. CORS middleware in FastAPI allows the
 - A `HEALTHCHECK` polls `/health` from inside the backend container.
 - SQLite requires a single instance; do not scale to replicas or run on multi-node hosts.
 
-## 13. Testing
+## 15. Testing
 
-`uv run pytest --cov=app --cov-report=term-missing` — 112 tests, 87% line coverage.
+`uv run pytest --cov=app --cov-report=term-missing` — 119 tests, 87% line coverage.
 
 - `tests/test_api.py` — route behavior, status-code mapping, pagination, oversized/invalid
   uploads, report routes, an end-to-end happy path through the API with a mocked detector.
 - `tests/test_inspection.py` — grading rules, verdict notes, invalid images.
 - `tests/test_providers.py` — factory selection, key handling, provider request/response
   handling, network failure translation.
-- `tests/test_reports.py` — transcription, narrative validation, conflict handling, annotated
-  photo rendering, one-page layout constraints, actionable AI error mapping.
+- `tests/test_reports.py` — narrative validation, conflict handling, annotated photo rendering,
+  one-page layout constraints, actionable AI error mapping.
 - `tests/test_categories.py` — category seeding, create/rename/disable/delete rules, and dynamic
   categories in new inspections.
-- `tests/test_config.py` — settings defaults and Ollama URL validation.
+- `tests/test_transcription.py` — Gemini upload/transcribe requests, MIME mapping, uploaded-file
+  cleanup, empty/silent audio, and the single transcription entry point.
+- `tests/test_voice_analysis.py` — transcript analysis with a mocked AI model and keyword fallback.
+- `tests/test_config.py` — settings defaults.
 
 The AI model is always mocked (`monkeypatch`) in unit tests, so the suite is deterministic and
 network-free; no test calls a live provider.
 
-## 14. Limitations and known gaps
+## 16. Limitations and known gaps
 
 - The bounding box is returned by the API, drawn by the backend into a saved annotated JPEG, and
   rendered in the PDF. The result panel shows that image when coordinates are available, but does
   not yet display the confidence score.
 - No audio-duration limit is enforced (size and post-transcription length are).
-- The Gemini and Ollama providers are implemented and unit-tested but have no documented live run or
-  performance numbers; the local-model bonus (quantization/batching metrics) is not done.
+- The Gemini vision and transcription paths are implemented and unit-tested with mocked clients,
+  but have no documented live run or performance numbers. Inference uses hosted API models only;
+  the local-model bonus (quantization/batching metrics) is out of scope.
 - The optional multi-inspection summary report from the SOW is not implemented.
 - SQLite limits the system to one writer process; concurrent-heavy or multi-node deployments
   would need a different store (explicitly out of scope for the MVP).

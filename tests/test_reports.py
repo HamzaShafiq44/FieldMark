@@ -375,19 +375,6 @@ def test_report_request_instructs_plain_farmer_friendly_language() -> None:
     assert "everyday, practical language" in farmer["farmer_audience_guidance"]
 
 
-def test_groq_transcribes_optional_voice_note(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Send audio bytes to the configured Groq transcription model."""
-    monkeypatch.setattr(settings, "groq_api_key", SecretStr("report-test-key"))
-    client = Mock()
-    client.audio.transcriptions.create.return_value = Mock(text="Soft spot near the stem.")
-    with patch("app.ai.groq_report.Groq", return_value=client):
-        transcript = groq_report.transcribe_voice_note(b"voice bytes", "voice-note.wav")
-
-    request = client.audio.transcriptions.create.call_args.kwargs
-    assert request["file"] == ("voice-note.wav", b"voice bytes")
-    assert transcript == "Soft spot near the stem."
-
-
 @pytest.mark.parametrize(
     ("error_factory", "message"),
     [

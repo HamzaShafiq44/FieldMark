@@ -1,8 +1,115 @@
 # Visual Defect Inspector
 
-A software-only product grading MVP. A farmer uploads or captures a fruit photo, the configured
-vision provider returns a validated visual finding, and deterministic grading rules produce a
-verdict and next-step recommendation. Results are indicative and do not assess food safety.
+Upload a photo of a fruit and get a pass/defect verdict, a quality grade, a located defect, and a
+downloadable PDF report. Built as a software-only MVP for farmers grading produce after harvest.
+
+## Features
+
+- **Photo input** — upload an image or capture one with the device camera in the browser.
+- **Voice input** — record a voice note in the browser or upload an audio file; all transcription
+  uses Gemini 3.5 Transcribe.
+- **AI finding** — detected product, edibility, condition, confidence, defect types
+  (bruise / rot / mold / deformity), severity, and a bounding box.
+- **Deterministic grading** — A / B / Reject / Needs manual review with plain-language verdict notes
+  and sell-or-discard advice.
+- **Defect location** — an annotated JPEG is generated from the model's bounding box.
+- **PDF report** — a one-page, AI-written report rebuilt on download, with a deterministic fallback
+  if AI writing fails.
+- **History and categories** — browse past inspections with thumbnails and report status, and manage
+  the products the inspector expects.
+
+Full list: [ARCHITECTURE.md — Feature list](ARCHITECTURE.md#3-feature-list).
+
+## Tech stack
+
+- **Backend:** Python 3.12, FastAPI, Pydantic / pydantic-settings, Pillow, ReportLab, SQLite
+  (stdlib `sqlite3`), Groq and Google GenAI SDKs. Dependencies managed with `uv`.
+- **Frontend:** React 19, TypeScript, Vite, React Router, lucide-react, plain CSS.
+- **Tooling:** ruff, pyright, pytest / pytest-cov; ESLint + oxlint, Prettier; Docker Compose.
+
+How each framework is used: [ARCHITECTURE.md — Technology stack](ARCHITECTURE.md#2-technology-stack).
+
+## Getting started
+
+### Prerequisites
+
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/)
+- Node.js and npm (for the frontend)
+- API keys: `GROQ_API_KEY` (vision and report writing) and `GEMINI_API_KEY` (all voice transcription)
+- Optional: Docker with Compose v2
+
+### Run locally
+
+```bash
+git clone <repository-url>
+cd visual-defect-inspector-api
+uv sync
+cp .env.example .env
+# add GROQ_API_KEY and GEMINI_API_KEY to .env
+uv run uvicorn app.main:app --reload
+```
+
+In a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the Vite URL printed in the terminal (usually `http://localhost:5173`). The dev server proxies
+`/health`, `/inspections`, and `/api` to the API on port 8000. API docs: `http://localhost:8000/docs`.
+
+### Run with Docker
+
+```bash
+cp .env.example .env   # add both API keys
+docker compose up --build -d
+```
+
+UI: `http://localhost:3000` · API and docs: `http://localhost:8000`. Set `WEB_PORT` (for example
+`WEB_PORT=3001 docker compose up -d`) for a different UI port. History lives in the host `./data/`
+directory, so it survives restarts and rebuilds.
+
+## Configuration
+
+Copy `.env.example` to `.env` and never commit real keys. Main variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VISION_PROVIDER` | `groq` | Vision provider: `groq` or `gemini` |
+| `GROQ_API_KEY` | *(empty)* | Required for Groq vision and report writing |
+| `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Groq vision model |
+| `GROQ_REPORT_MODEL` | `openai/gpt-oss-20b` | Report narrative model |
+| `GEMINI_API_KEY` | *(empty)* | Required for Gemini vision and **all** voice transcription |
+| `GEMINI_VISION_MODEL` | `gemini-4-hydrogen` | Gemini analysis model |
+| `GEMINI_LOCALIZATION_MODEL` | `gemini-3.5-flash-lite` | Second-stage defect box model |
+| `GEMINI_FALLBACK_MODELS` | `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite` | Tried on transient model errors |
+| `GEMINI_TRANSCRIPTION_MODEL` | `gemini-3.5-transcribe` | All voice-note transcription |
+| `INSPECTION_DB_PATH` | `data/inspections.sqlite3` | SQLite database path |
+| `FRONTEND_ORIGIN` | `http://localhost:3000` | Allowed CORS origin |
+| `VITE_API_BASE_URL` | `http://localhost:8000` | API URL baked into the frontend at build time |
+| `WEB_PORT` | `3000` | Frontend host port in Docker |
+
+Full list: [ARCHITECTURE.md — Configuration](ARCHITECTURE.md#13-configuration).
+
+## API endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/inspections/product` | Inspect a photo or a voice note (multipart) |
+| GET | `/inspections/history?limit&offset` | Paginated inspection history |
+| DELETE | `/inspections/history` | Clear all history, images, and reports |
+| GET | `/inspections/history/{id}/thumbnail` | 192×192 preview image |
+| GET | `/inspections/{id}/report?download=true` | Rebuild and download the PDF |
+| POST | `/inspections/{id}/report` | Add a voice note to a report (API only) |
+| POST | `/inspections/{id}/relocate` | Re-locate a defect on an older inspection |
+| GET/POST | `/api/categories` | List or create categories |
+| PATCH/DELETE | `/api/categories/{slug}` | Rename, enable/disable, or delete a category |
+| GET | `/health` | Health check |
+
+Interactive docs are at `http://localhost:8000/docs`. Full status codes:
+[ARCHITECTURE.md — API surface](ARCHITECTURE.md#8-api-surface).
 
 ## Architecture
 
@@ -12,164 +119,47 @@ flowchart LR
     ApiClient --> Route["FastAPI route"]
     Route --> Service["Inspection service"]
     Service --> Factory["Configured vision provider"]
-    Factory --> Groq["Groq API"]
-    Factory --> Gemini["Optional Gemini API"]
-    Factory --> Ollama["Optional local Ollama"]
+    Factory --> Groq["Groq API (vision + reports)"]
+    Factory --> Gemini["Gemini API (vision + transcription)"]
     Service --> SQLite["SQLite inspection history"]
     SQLite --> History["History list and thumbnails"]
 ```
 
-The API route handles HTTP input and responses, the service validates images and applies grading
-rules, and the provider factory selects a vision implementation from configuration. Inspection
-metadata is saved to SQLite at `data/inspections.sqlite3` by default. Original photos, thumbnails,
-and annotated defect images are stored under `data/images/`; SQLite keeps only their file paths.
-Report narratives are stored in SQLite and the PDF is rebuilt on demand at download time, so no
-PDF files are written to disk. Clearing inspection history deletes the saved images and reports. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for the component map, data model, API surface, failure
-modes, and deployment details.
+The route handles HTTP input and responses, the service validates images and applies grading rules,
+and the factory selects a vision implementation from configuration. Report narratives are stored in
+SQLite and the PDF is rebuilt on demand at download time, so no PDF files are written to disk.
+Component map, data flow, data model, and security notes: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Run locally
+## Project structure
 
-Install Python 3.12 and `uv`. From the repository root:
-
-```bash
-uv sync
-cp .env.example .env
+```text
+app/
+  api/          FastAPI routes for inspections and categories
+  services/     Image validation, grading, transcription and report orchestration
+  ai/           Vision providers, transcription, prompts, Pydantic schemas
+  storage/      SQLite repositories and migrations
+  reports/      ReportLab PDF renderer
+  core/         Environment-driven settings
+frontend/src/
+  pages/        InspectPage and CategoriesPage
+  services/     Typed API clients
+  utils/        Audio helpers
+tests/          Backend tests (AI clients mocked)
+sample_images/  Example produce photos for trying the app
+data/           Local SQLite database and images (gitignored)
 ```
 
-Add a Groq API key to the local `.env`, then start the backend:
+## Testing
 
 ```bash
-uv run uvicorn app.main:app --reload
-```
-
-In another terminal, start the frontend:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open the Vite URL printed in the terminal. The development server proxies API calls to the local
-FastAPI server. Set `VITE_API_BASE_URL` if the API is hosted elsewhere.
-
-## Run with Docker
-
-Docker (with Compose v2) is the only prerequisite — no Python, Node, or `uv` install needed.
-
-```bash
-cp .env.example .env
-```
-
-Add a Groq API key to the local `.env`, then build and start:
-
-```bash
-docker compose up --build -d
-```
-
-Open the web UI at **http://localhost:3000**. The API (and Swagger docs) run separately at
-**http://localhost:8000**. Set `WEB_PORT` (for example `WEB_PORT=3001 docker compose up -d`) to use
-a different host port for the UI, and update `FRONTEND_ORIGIN` in `.env` to match. Set
-`VITE_API_BASE_URL` if the API is hosted elsewhere; it is baked into the frontend at build time, so
-rebuild the frontend image after changing it.
-
-Useful commands:
-
-```bash
-docker compose logs -f backend     # follow API logs
-docker compose logs -f frontend    # follow web server logs
-docker compose restart backend     # restart the API; inspection history is preserved
-docker compose down                # stop both containers; inspection history is preserved
-```
-
-Inspection history lives in the host `./data/` folder, bind-mounted at `/app/data`, so it survives
-container restarts and rebuilds and can be opened directly with any SQLite viewer. Deleting
-`./data/` removes the saved inspections, images, and reports. Secrets come from the runtime `.env`
-file and are never baked into the image.
-
-## Result behavior
-
-The vision model names the product in `detected_item` and marks whether it is an edible product
-in `item_is_fruit`. Edible products are graded with the same rules even when they are outside the
-active inspection categories; those results also state that the product is outside the categories.
-Anything that is not an edible product is shown as an "Unsupported item" with no grade or verdict.
-
-Every edible product gets a report narrative generated automatically during the inspection. If the
-AI-written narrative fails, deterministic text is used instead; if both fail, no report is stored
-and the interface shows that the report is unavailable. The one-page PDF is rebuilt from that
-stored narrative whenever you download it — no PDF is written to disk. Non-edible items do not get
-a report. An optional voice note updates the stored narrative with spoken context.
-
-## Inspection categories
-
-The Categories page (`/categories`) manages the products the inspector expects. The current
-categories are stored in SQLite, seeded with tomato, apple, banana, and orange, and sent to the
-vision model for every new inspection. Add a product name and an optional emoji to include it in
-future inspections; existing inspections and PDFs keep their original result.
-
-Categories can be renamed, disabled, or deleted. Disabling removes a category from new
-inspections while keeping historical records. A category that is referenced by saved inspections
-can only be disabled, not deleted. The API is available at `GET/POST /api/categories` and
-`PATCH/DELETE /api/categories/{slug}`.
-
-The web app uses client-side routes: `/` for inspection and `/categories` for category
-management. The FastAPI server returns `index.html` for `/categories` so the page also works on a
-direct refresh or shared link.
-
-## Vision providers
-
-Groq is the default (`VISION_PROVIDER=groq`); set `GROQ_API_KEY` and optionally
-`GROQ_VISION_MODEL`.
-
-**Gemini** is available on Google's free tier: set `VISION_PROVIDER=gemini`, add `GEMINI_API_KEY`,
-and optionally override `GEMINI_VISION_MODEL` and `GEMINI_LOCALIZATION_MODEL`. It uses structured
-JSON response schemas for both the analysis and defect-localization calls. Defaults are
-`gemini-4-hydrogen` for analysis and `gemini-3.5-flash-lite` for the second-stage box. If the
-selected model is overloaded or rate-limited (HTTP 429/5xx), the detector automatically retries
-the next model in `GEMINI_FALLBACK_MODELS` (default: `gemini-3.8-flash`, `gemini-3.6-flash`,
-`gemini-3.5-flash-lite`). Free-tier prompts may be used by Google to improve its products, and rate
-limits vary, so check your limits in Google AI Studio.
-
-Ollama is an optional local provider, not required to run the default setup. Install Ollama and
-pull a vision model such as `qwen2.5vl:7b`, then set `VISION_PROVIDER=ollama`. Configure its
-endpoint and model with `OLLAMA_BASE_URL` and `OLLAMA_VISION_MODEL`. The application does not
-silently switch providers if the selected provider fails.
-
-## Voice-note transcription
-
-Voice-note-only inspections use `gemini-3.5-transcribe` by default (`TRANSCRIPTION_PROVIDER=gemini`).
-Override the model with `GEMINI_TRANSCRIPTION_MODEL`, or set `TRANSCRIPTION_PROVIDER=groq` to use
-Groq Whisper instead. Voice notes attached to PDF reports always use Groq Whisper
-(`GROQ_TRANSCRIPTION_MODEL`), so a `GROQ_API_KEY` is still required for report writing and those
-voice notes. The Gemini flow uploads the audio before transcribing (two requests) and free-tier
-content may be used to improve Google's products.
-
-## Inspection history
-
-Every successful inspection stores its result metadata in SQLite, a small thumbnail under
-`data/images/`, and the original photo under `data/images/` for PDF evidence. History is available
-through `GET /inspections/history`; each thumbnail is served from
-`GET /inspections/history/{inspection_id}/thumbnail`. A history item with a stored PDF shows a
-download button; otherwise the interface shows that the report is unavailable.
-
-Set `INSPECTION_DB_PATH` to use a different local database path. The default `data/` directory is
-ignored by Git.
-
-## Checks
-
-From the repository root:
-
-```bash
+# backend: 119 tests, ~87% coverage; AI clients are mocked so the suite is offline
+uv run pytest --cov=app --cov-report=term-missing
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
-uv run pytest --cov=app --cov-report=term-missing
-```
 
-From `frontend/`:
-
-```bash
+# frontend
+cd frontend
 npm run lint
 npm run format:check
 npm run build
