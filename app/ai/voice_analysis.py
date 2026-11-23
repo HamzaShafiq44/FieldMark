@@ -12,9 +12,9 @@ import logging
 import re
 
 import groq
-from groq import Groq
 from pydantic import ValidationError
 
+from app.ai.client_factory import get_groq_client
 from app.ai.errors import ReportAIError
 from app.ai.schemas import Condition, DefectType, Finding, Severity
 from app.core.config import DEFAULT_GROQ_REPORT_MODEL, settings
@@ -97,7 +97,7 @@ def _analyze_with_groq(transcript: str, supported_types: list[str]) -> Finding:
     key = settings.groq_api_key.get_secret_value()
     if not key:
         raise ReportAIError("GROQ_API_KEY is not configured for voice analysis.")
-    client = Groq(api_key=key)
+    client = get_groq_client(settings.groq_api_key)
     model = settings.groq_report_model or DEFAULT_GROQ_REPORT_MODEL
     response = client.chat.completions.create(
         model=model,

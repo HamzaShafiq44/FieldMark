@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS inspections (
     inspection_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
     produce_type TEXT NOT NULL,
+    detected_item TEXT NOT NULL DEFAULT '',
     verdict TEXT NOT NULL,
     grade TEXT NOT NULL,
     thumbnail_path TEXT,
@@ -38,6 +39,7 @@ CREATE TABLE inspections_new (
     inspection_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
     produce_type TEXT NOT NULL,
+    detected_item TEXT NOT NULL DEFAULT '',
     verdict TEXT NOT NULL,
     grade TEXT NOT NULL,
     thumbnail_path TEXT,
@@ -47,18 +49,18 @@ CREATE TABLE inspections_new (
 """
 INSERT_HISTORY_ITEM = """
 INSERT INTO inspections (
-    inspection_id, created_at, produce_type, verdict, grade,
+    inspection_id, created_at, produce_type, detected_item, verdict, grade,
     thumbnail_path, original_image_path, result_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 INSERT_HISTORY_ITEM_REBUILD = """
 INSERT INTO inspections_new (
-    inspection_id, created_at, produce_type, verdict, grade,
+    inspection_id, created_at, produce_type, detected_item, verdict, grade,
     thumbnail_path, original_image_path, result_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 SELECT_HISTORY_ITEMS = """
-SELECT inspection_id, created_at, produce_type, verdict, grade, result_json,
+SELECT inspection_id, created_at, produce_type, detected_item, verdict, grade, result_json,
        EXISTS(
            SELECT 1 FROM inspection_reports
            WHERE inspection_reports.inspection_id = inspections.inspection_id
@@ -172,6 +174,7 @@ class InspectionRepository:
                         result.inspection_id,
                         created_at,
                         result.produce_type,
+                        result.detected_item,
                         result.verdict,
                         result.grade,
                         _stored_path(self.database_path.parent, thumbnail_path),
@@ -199,6 +202,7 @@ class InspectionRepository:
                         result.inspection_id,
                         created_at,
                         result.produce_type,
+                        result.detected_item,
                         result.verdict,
                         result.grade,
                         None,  # thumbnail_path
@@ -378,10 +382,12 @@ class InspectionRepository:
             connection.row_factory = sqlite3.Row
             with connection:
                 connection.execute(CREATE_HISTORY_TABLE)
+                # Backfill before the legacy BLOB rebuild so it copies real values.
+                detected_item_migrated = _migrate_detected_item_schema(connection)
                 migrated = _migrate_history_schema(connection, self.database_path.parent)
                 connection.execute(CREATE_REPORTS_TABLE)
                 reports_migrated = _migrate_reports_schema(connection)
-            if migrated or reports_migrated:
+            if migrated or detected_item_migrated or reports_migrated:
                 try:
                     connection.execute("VACUUM")
                 except sqlite3.Error as exc:
@@ -400,7 +406,7 @@ def _history_item(row: sqlite3.Row) -> InspectionHistoryItem:
         inspection_id=row["inspection_id"],
         created_at=row["created_at"],
         produce_type=row["produce_type"],
-        detected_item=result.detected_item if result else "",
+        detected_item=_row_text(row, "detected_item") or (result.detected_item if result else ""),
         item_is_fruit=result.item_is_fruit if result else False,
         in_inspection_categories=result.in_inspection_categories if result else True,
         voice_note_transcript=result.voice_note_transcript if result else None,
@@ -421,6 +427,29 @@ def _stored_result(raw: str | None) -> InspectionResult | None:
     except ValidationError:
         LOGGER.warning("Ignoring an unreadable stored inspection result.")
         return None
+
+
+def _migrate_detected_item_schema(connection: sqlite3.Connection) -> bool:
+    """Add the detected_item column and backfill it from stored results."""
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(inspections)")}
+    if "detected_item" in columns:
+        return False
+
+    LOGGER.info("Adding detected_item to inspection history.")
+    connection.execute("ALTER TABLE inspections ADD COLUMN detected_item TEXT NOT NULL DEFAULT ''")
+    # Very old schemas have no result_json yet; their BLOB rebuild will copy
+    # the empty column and the result itself is unavailable for backfilling.
+    if "result_json" not in columns:
+        return True
+    rows = connection.execute("SELECT inspection_id, result_json FROM inspections").fetchall()
+    for row in rows:
+        result = _stored_result(row["result_json"])
+        if result is not None and result.detected_item:
+            connection.execute(
+                "UPDATE inspections SET detected_item = ? WHERE inspection_id = ?",
+                (result.detected_item, row["inspection_id"]),
+            )
+    return True
 
 
 def _migrate_history_schema(connection: sqlite3.Connection, database_dir: Path) -> bool:
@@ -461,6 +490,7 @@ def _migrate_history_schema(connection: sqlite3.Connection, database_dir: Path) 
                 inspection_id,
                 row["created_at"],
                 row["produce_type"],
+                _row_text(row, "detected_item") or "",
                 row["verdict"],
                 row["grade"],
                 thumbnail_path,

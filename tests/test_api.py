@@ -93,6 +93,96 @@ def test_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert thumbnail.content
 
 
+def test_inspection_schedules_background_finalization(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Return the verdict immediately and defer refinement and reporting."""
+    finalized: list[str] = []
+    monkeypatch.setattr(
+        routes_inspection,
+        "finalize_inspection",
+        lambda inspection_id: finalized.append(inspection_id),
+    )
+    finding = Finding(produce_type=ProduceType.APPLE, condition=Condition.FRESH, confidence=0.9)
+    _patch_detector(monkeypatch, lambda _: finding)
+
+    response = client.post("/inspections/product", files={"image": ("apple.jpg", _jpeg_bytes())})
+
+    assert response.status_code == 200
+    assert response.json()["report_available"] is False
+    assert finalized == [response.json()["inspection_id"]]
+
+
+def test_voice_inspection_schedules_background_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return the voice verdict immediately and defer PDF generation."""
+    finalized: list[str] = []
+    monkeypatch.setattr(
+        routes_inspection,
+        "finalize_inspection",
+        lambda inspection_id: finalized.append(inspection_id),
+    )
+    result = _voice_inspection_result("A soft spot on the tomato")
+    monkeypatch.setattr(routes_inspection, "inspect_from_voice", lambda *_: result)
+
+    response = client.post(
+        "/inspections/product",
+        files={"voice_note": ("note.m4a", b"audio", "audio/m4a")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["report_available"] is False
+    assert finalized == [result.inspection_id]
+
+
+def test_detected_item_column_is_backfilled_from_result_json() -> None:
+    """Upgrade older databases and recover product names from stored results."""
+    database_path = settings.inspection_db_path
+    result = _voice_inspection_result("A soft spot on the tomato").model_copy(
+        update={"detected_item": "peach"}
+    )
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE inspections (
+                inspection_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                produce_type TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                grade TEXT NOT NULL,
+                thumbnail_path TEXT,
+                original_image_path TEXT,
+                result_json TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO inspections (
+                inspection_id, created_at, produce_type, verdict, grade,
+                thumbnail_path, original_image_path, result_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                result.inspection_id,
+                "2026-01-01T00:00:00+00:00",
+                result.produce_type,
+                result.verdict,
+                result.grade,
+                None,
+                None,
+                result.model_dump_json(),
+            ),
+        )
+
+    item = InspectionRepository(database_path).list_history(10, 0)[0]
+    assert item.detected_item == "peach"
+    with sqlite3.connect(database_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(inspections)")}
+        assert "detected_item" in columns
+        assert connection.execute("SELECT detected_item FROM inspections").fetchone()[0] == "peach"
+
+
 def test_history_starts_empty_and_validates_pagination() -> None:
     """Return an empty list and reject invalid history pagination values."""
     response = client.get("/inspections/history")
@@ -125,6 +215,33 @@ def test_images_are_saved_to_files_not_sqlite(monkeypatch: pytest.MonkeyPatch) -
     assert "original_image" not in columns
     assert "thumbnail_path" in columns
     assert "original_image_path" in columns
+    assert "detected_item" in columns
+
+
+def test_out_of_category_detected_item_is_persisted_in_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep the real product name in SQL when produce_type is normalized to unknown."""
+    finding = Finding(
+        produce_type=ProduceType.UNKNOWN,
+        detected_item="grapes",
+        item_is_fruit=True,
+        condition=Condition.FRESH,
+        confidence=0.9,
+    )
+    _patch_detector(monkeypatch, lambda _: finding)
+
+    response = client.post("/inspections/product", files={"image": ("grapes.jpg", _jpeg_bytes())})
+
+    with sqlite3.connect(settings.inspection_db_path) as connection:
+        row = connection.execute(
+            "SELECT produce_type, detected_item FROM inspections WHERE inspection_id = ?",
+            (response.json()["inspection_id"],),
+        ).fetchone()
+    assert row == ("unknown", "grapes")
+    history_item = client.get("/inspections/history").json()["items"][0]
+    assert history_item["detected_item"] == "grapes"
+    assert history_item["in_inspection_categories"] is False
 
 
 def test_clear_history_deletes_inspections_and_reports(
@@ -518,9 +635,7 @@ def _voice_inspection_result(transcript: str) -> InspectionResult:
     "content_type",
     ["audio/x-m4a", "audio/m4a", "audio/mp4", "application/octet-stream"],
 )
-def test_voice_inspection_accepts_m4a(
-    monkeypatch: pytest.MonkeyPatch, content_type: str
-) -> None:
+def test_voice_inspection_accepts_m4a(monkeypatch: pytest.MonkeyPatch, content_type: str) -> None:
     """Accept .m4a uploads regardless of which MIME type the browser reports."""
     received: list[str] = []
 

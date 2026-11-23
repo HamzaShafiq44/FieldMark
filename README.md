@@ -14,7 +14,8 @@ downloadable PDF report. Built as a software-only MVP for farmers grading produc
   and sell-or-discard advice.
 - **Defect location** — an annotated JPEG is generated from the model's bounding box.
 - **PDF report** — a one-page, AI-written report rebuilt on download, with a deterministic fallback
-  if AI writing fails.
+  if AI writing fails. The verdict returns as soon as the evidence is analyzed (photo or voice
+  note); the report is generated in the background and the download button appears when it is ready.
 - **History and categories** — browse past inspections with thumbnails and report status, and manage
   the products the inspector expects.
 
@@ -151,7 +152,7 @@ data/           Local SQLite database and images (gitignored)
 ## Testing
 
 ```bash
-# backend: 119 tests, ~87% coverage; AI clients are mocked so the suite is offline
+# backend: 127 tests, ~87% coverage; AI clients are mocked so the suite is offline
 uv run pytest --cov=app --cov-report=term-missing
 uv run ruff check .
 uv run ruff format --check .

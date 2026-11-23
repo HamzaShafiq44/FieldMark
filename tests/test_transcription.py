@@ -29,7 +29,11 @@ def test_gemini_transcription_returns_output_text(monkeypatch: pytest.MonkeyPatc
     client = _mock_client()
     with patch.object(gemini_transcribe.genai, "Client", return_value=client) as factory:
         result = gemini_transcribe.transcribe_voice_note(b"audio", "note.wav")
-    factory.assert_called_once_with(api_key="test-key", http_options={"api_version": "v1beta"})
+    factory.assert_called_once()
+    assert factory.call_args.kwargs["api_key"] == "test-key"
+    options = factory.call_args.kwargs["http_options"]
+    assert options.api_version == "v1beta"
+    assert options.timeout == settings.gemini_timeout_ms
     request = client.interactions.create.call_args.kwargs
     assert request["model"] == "gemini-3.5-transcribe"
     assert request["generation_config"] == {"transcription_config": {"mode": "verbatim"}}
@@ -147,7 +151,7 @@ def test_voice_inspection_grades_spoken_product(
 def test_voice_inspection_generates_report(
     monkeypatch: pytest.MonkeyPatch, tmp_path: object
 ) -> None:
-    """Voice inspections with a report source ask for a PDF like photo inspections."""
+    """Voice inspections generate their PDF in the background after the response."""
     from pathlib import Path
 
     from app.services import inspection_service
@@ -159,9 +163,10 @@ def test_voice_inspection_generates_report(
         "generate_automatic_report",
         lambda inspection_id: report_ids.append(inspection_id) or True,
     )
-    with patch.object(
-        transcription, "transcribe_voice_note", return_value="My apple is rotten."
-    ):
+    with patch.object(transcription, "transcribe_voice_note", return_value="My apple is rotten."):
         result = inspection_service.inspect_from_voice(b"audio", "note.m4a")
+    assert result.report_available is False
+    assert report_ids == []
+
+    inspection_service.finalize_inspection(result.inspection_id)
     assert report_ids == [result.inspection_id]
-    assert result.report_available is True

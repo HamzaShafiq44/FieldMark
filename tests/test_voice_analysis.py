@@ -73,7 +73,7 @@ def test_groq_analysis_returns_validated_finding(monkeypatch: pytest.MonkeyPatch
             )
         ]
     )
-    with patch("app.ai.voice_analysis.Groq", return_value=client):
+    with patch("app.ai.client_factory.Groq", return_value=client):
         finding = voice_analysis.analyze_transcript("The apple is rotten.", ["apple"])
     assert finding.produce_type == "apple"
     assert finding.condition is Condition.ROTTEN
@@ -87,7 +87,7 @@ def test_invalid_model_output_uses_keyword_fallback(monkeypatch: pytest.MonkeyPa
     client.chat.completions.create.return_value = Mock(
         choices=[Mock(message=Mock(content="not json"))]
     )
-    with patch("app.ai.voice_analysis.Groq", return_value=client):
+    with patch("app.ai.client_factory.Groq", return_value=client):
         finding = voice_analysis.analyze_transcript("My apple is rotten.", ["apple"])
     assert finding.produce_type == "apple"
     assert finding.condition is Condition.ROTTEN

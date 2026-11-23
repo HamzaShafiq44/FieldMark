@@ -1,6 +1,7 @@
 """Google Gemini vision provider using structured JSON output."""
 
 import logging
+import time
 from collections.abc import Sequence
 
 from google import genai
@@ -8,6 +9,7 @@ from google.genai import types
 from PIL import Image
 from pydantic import SecretStr, ValidationError
 
+from app.ai.client_factory import get_gemini_client
 from app.ai.image_encoding import encode_image_bytes
 from app.ai.prompts import (
     DEFAULT_SUPPORTED_TYPES,
@@ -18,6 +20,7 @@ from app.ai.prompts import (
 )
 from app.ai.providers import DetectionError, defect_summary
 from app.ai.schemas import BBox, DefectLocalization, Finding
+from app.core.config import settings
 
 LOGGER = logging.getLogger(__name__)
 TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
@@ -102,7 +105,7 @@ class GeminiVisionDetector:
         if not key:
             raise DetectionError("GEMINI_API_KEY is not configured.")
         if self._client is None:
-            self._client = genai.Client(api_key=key)
+            self._client = get_gemini_client(self.api_key)
         return self._client
 
     def __call__(self, image: Image.Image) -> Finding:
@@ -160,9 +163,14 @@ class GeminiVisionDetector:
             response_schema=schema,
             temperature=0,
         )
-        candidates = [model, *(item for item in self.fallback_models if item != model)]
+        # Cap fallback attempts so a rate-limited primary cannot turn one
+        # inspection into a long chain of sequential network calls.
+        max_fallbacks = max(0, settings.gemini_max_fallbacks)
+        candidates = [model, *(item for item in self.fallback_models if item != model)][
+            : 1 + max_fallbacks
+        ]
         last_error: genai.errors.APIError | None = None
-        for candidate in candidates:
+        for index, candidate in enumerate(candidates):
             try:
                 response = client.models.generate_content(
                     model=candidate, contents=content, config=config
@@ -177,6 +185,8 @@ class GeminiVisionDetector:
                     candidate,
                     exc.code,
                 )
+                if index + 1 < len(candidates) and settings.gemini_fallback_backoff_seconds > 0:
+                    time.sleep(settings.gemini_fallback_backoff_seconds)
         if last_error is not None:
             raise last_error
         return ""

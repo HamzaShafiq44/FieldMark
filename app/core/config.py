@@ -17,6 +17,10 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_VOICE_NOTE_BYTES = 25 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 ALLOWED_FORMATS = ("JPEG", "PNG", "WEBP")
+GROQ_TIMEOUT_SECONDS = 20.0
+GEMINI_TIMEOUT_MS = 20_000
+GEMINI_MAX_FALLBACKS = 2
+GEMINI_FALLBACK_BACKOFF_SECONDS = 0.5
 DEFAULT_INSPECTION_DB_PATH = BASE_DIR / "data" / "inspections.sqlite3"
 DEFAULT_FRONTEND_ORIGIN = "http://localhost:3000"
 
@@ -30,10 +34,14 @@ class Settings(BaseSettings):
     groq_api_key: SecretStr = SecretStr("")
     groq_vision_model: str = DEFAULT_GROQ_VISION_MODEL
     groq_report_model: str = DEFAULT_GROQ_REPORT_MODEL
+    groq_timeout_seconds: float = GROQ_TIMEOUT_SECONDS
     gemini_api_key: SecretStr = SecretStr("")
     gemini_vision_model: str = DEFAULT_GEMINI_VISION_MODEL
     gemini_localization_model: str = DEFAULT_GEMINI_LOCALIZATION_MODEL
     gemini_fallback_models: str = DEFAULT_GEMINI_FALLBACK_MODELS
+    gemini_max_fallbacks: int = GEMINI_MAX_FALLBACKS
+    gemini_fallback_backoff_seconds: float = GEMINI_FALLBACK_BACKOFF_SECONDS
+    gemini_timeout_ms: int = GEMINI_TIMEOUT_MS
     gemini_transcription_model: str = DEFAULT_GEMINI_TRANSCRIPTION_MODEL
     inspection_db_path: Path = DEFAULT_INSPECTION_DB_PATH
     max_image_bytes: int = MAX_IMAGE_BYTES

@@ -8,13 +8,14 @@ from google.genai import errors
 from PIL import Image
 from pydantic import SecretStr
 
+from app.ai.client_factory import get_gemini_transcription_client, get_groq_client
 from app.ai.produce_gemini import FINDING_SCHEMA, LOCALIZATION_SCHEMA, GeminiVisionDetector
 from app.ai.produce_groq import GroqVisionDetector
 from app.ai.prompts import SYSTEM_PROMPT, get_localization_prompt, get_system_prompt
 from app.ai.provider_factory import create_vision_detector
 from app.ai.providers import DetectionError
 from app.ai.schemas import Condition, DefectType, Finding, ProduceType
-from app.core.config import Settings
+from app.core.config import Settings, settings
 
 
 def _image() -> Image.Image:
@@ -79,9 +80,13 @@ def test_groq_passes_configured_key_and_parses_finding() -> None:
     client = Mock()
     client.chat.completions.create.return_value = response
     detector = GroqVisionDetector(SecretStr("test-key"), "vision-test")
-    with patch("app.ai.produce_groq.Groq", return_value=client) as groq_client:
+    with patch("app.ai.client_factory.Groq", return_value=client) as groq_client:
         result = detector(_image())
-    groq_client.assert_called_once_with(api_key="test-key")
+    groq_client.assert_called_once_with(
+        api_key="test-key",
+        timeout=settings.groq_timeout_seconds,
+        max_retries=1,
+    )
     request_payload = client.chat.completions.create.call_args.kwargs
     image_url = request_payload["messages"][1]["content"][1]["image_url"]["url"]
     assert request_payload["model"] == "vision-test"
@@ -110,9 +115,11 @@ def test_gemini_sends_structured_config_and_parses_finding() -> None:
     client = Mock()
     client.models.generate_content.return_value = response
     detector = GeminiVisionDetector(SecretStr("test-key"), "gemini-4-hydrogen")
-    with patch("app.ai.produce_gemini.genai.Client", return_value=client) as factory:
+    with patch("app.ai.client_factory.genai.Client", return_value=client) as factory:
         result = detector(_image())
-    factory.assert_called_once_with(api_key="test-key")
+    factory.assert_called_once()
+    assert factory.call_args.kwargs["api_key"] == "test-key"
+    assert factory.call_args.kwargs["http_options"].timeout == settings.gemini_timeout_ms
     request = client.models.generate_content.call_args.kwargs
     assert request["model"] == "gemini-4-hydrogen"
     assert request["config"].response_mime_type == "application/json"
@@ -136,14 +143,17 @@ def test_gemini_reuses_a_live_client_across_calls() -> None:
     client = Mock()
     client.models.generate_content.return_value = response
     detector = GeminiVisionDetector(SecretStr("test-key"), "gemini-4-hydrogen")
-    with patch("app.ai.produce_gemini.genai.Client", return_value=client) as factory:
+    with patch("app.ai.client_factory.genai.Client", return_value=client) as factory:
         detector(_image())
         detector(_image())
-    factory.assert_called_once_with(api_key="test-key")
+    assert factory.call_count == 1
 
 
-def test_gemini_falls_back_to_other_model_on_capacity_error() -> None:
+def test_gemini_falls_back_to_other_model_on_capacity_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Retry with fallback models when the primary is overloaded."""
+    monkeypatch.setattr(settings, "gemini_fallback_backoff_seconds", 0)
     response = Mock()
     response.text = json.dumps(
         {
@@ -162,7 +172,7 @@ def test_gemini_falls_back_to_other_model_on_capacity_error() -> None:
         "gemini-4-hydrogen",
         fallback_models=["gemini-3.8-flash"],
     )
-    with patch("app.ai.produce_gemini.genai.Client", return_value=client):
+    with patch("app.ai.client_factory.genai.Client", return_value=client):
         result = detector(_image())
     calls = client.models.generate_content.call_args_list
     assert [call.kwargs["model"] for call in calls] == [
@@ -185,11 +195,61 @@ def test_gemini_does_not_fall_back_on_permanent_error() -> None:
         fallback_models=["gemini-3.8-flash"],
     )
     with (
-        patch("app.ai.produce_gemini.genai.Client", return_value=client),
+        patch("app.ai.client_factory.genai.Client", return_value=client),
         pytest.raises(DetectionError, match="Gemini vision detection failed"),
     ):
         detector(_image())
     assert client.models.generate_content.call_count == 1
+
+
+def test_gemini_fallback_attempts_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bound the number of sequential retry calls on a rate-limited provider."""
+    monkeypatch.setattr(settings, "gemini_max_fallbacks", 2)
+    monkeypatch.setattr(settings, "gemini_fallback_backoff_seconds", 0)
+    busy = errors.ServerError(503, {"error": {"message": "high demand", "status": "UNAVAILABLE"}})
+    client = Mock()
+    client.models.generate_content.side_effect = busy
+    detector = GeminiVisionDetector(
+        SecretStr("test-key"),
+        "gemini-4-hydrogen",
+        fallback_models=["flash-a", "flash-b", "flash-c", "flash-d"],
+    )
+    with (
+        patch("app.ai.client_factory.genai.Client", return_value=client),
+        pytest.raises(DetectionError),
+    ):
+        detector(_image())
+    calls = client.models.generate_content.call_args_list
+    assert [call.kwargs["model"] for call in calls] == [
+        "gemini-4-hydrogen",
+        "flash-a",
+        "flash-b",
+    ]
+
+
+def test_groq_clients_are_reused_with_bounded_timeout() -> None:
+    """Share one time-bounded Groq client across calls instead of rebuilding it."""
+    with patch("app.ai.client_factory.Groq") as factory:
+        first = get_groq_client(SecretStr("shared-key"))
+        second = get_groq_client(SecretStr("shared-key"))
+    assert first is second
+    factory.assert_called_once_with(
+        api_key="shared-key",
+        timeout=settings.groq_timeout_seconds,
+        max_retries=1,
+    )
+
+
+def test_gemini_transcription_client_is_cached_with_v1beta() -> None:
+    """Share one bounded v1beta client for all voice-note transcription."""
+    with patch("app.ai.client_factory.genai.Client") as factory:
+        first = get_gemini_transcription_client(SecretStr("transcribe-key"))
+        second = get_gemini_transcription_client(SecretStr("transcribe-key"))
+    assert first is second
+    factory.assert_called_once()
+    options = factory.call_args.kwargs["http_options"]
+    assert options.api_version == "v1beta"
+    assert options.timeout == settings.gemini_timeout_ms
 
 
 def test_gemini_locate_defect_uses_localization_model_and_schema() -> None:
@@ -201,7 +261,7 @@ def test_gemini_locate_defect_uses_localization_model_and_schema() -> None:
     detector = GeminiVisionDetector(
         SecretStr("test-key"), "gemini-4-hydrogen", "gemini-3.5-flash-lite"
     )
-    with patch("app.ai.produce_gemini.genai.Client", return_value=client):
+    with patch("app.ai.client_factory.genai.Client", return_value=client):
         bbox = detector.locate_defect(_image(), _defective_finding())
     request = client.models.generate_content.call_args.kwargs
     assert request["model"] == "gemini-3.5-flash-lite"
@@ -228,7 +288,7 @@ def test_groq_locate_defect_returns_parsed_bbox() -> None:
     client = Mock()
     client.chat.completions.create.return_value = response
     detector = GroqVisionDetector(SecretStr("test-key"), "vision-test")
-    with patch("app.ai.produce_groq.Groq", return_value=client):
+    with patch("app.ai.client_factory.Groq", return_value=client):
         bbox = detector.locate_defect(_image(), _defective_finding())
     assert bbox == (0.1, 0.2, 0.5, 0.6)
     user_text = client.chat.completions.create.call_args.kwargs["messages"][1]["content"][0]["text"]

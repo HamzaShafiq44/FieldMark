@@ -3,10 +3,10 @@
 import logging
 
 import groq
-from groq import Groq
 from PIL import Image
 from pydantic import SecretStr, ValidationError
 
+from app.ai.client_factory import get_groq_client
 from app.ai.image_encoding import encode_image_base64
 from app.ai.prompts import (
     DEFAULT_SUPPORTED_TYPES,
@@ -72,7 +72,7 @@ class GroqVisionDetector:
         if not key:
             raise DetectionError("GROQ_API_KEY is not configured.")
         image_data = f"data:image/jpeg;base64,{encode_image_base64(image)}"
-        response = Groq(api_key=key).chat.completions.create(
+        response = get_groq_client(self.api_key).chat.completions.create(
             model=self.model,
             temperature=0,
             response_format={"type": "json_object"},

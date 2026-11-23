@@ -30,7 +30,10 @@ sell-or-discard advice.
   `FRONTEND_ORIGIN`, and mounts two `APIRouter`s. Routes declare typed `Annotated` parameters
   (`File()`, `Form()`, `Query()`), use `UUID` path parameters and `response_model` for responses,
   and map domain errors to `HTTPException` status codes. Blocking work — image validation, SQLite,
-  and AI calls — is offloaded with `run_in_threadpool` so the event loop stays responsive.
+  and AI calls — is offloaded with `run_in_threadpool` so the event loop stays responsive. An upload
+response waits only for validation and the first vision call; defect refinement and PDF report
+generation are deferred to FastAPI `BackgroundTasks` so the verdict is not held up by further
+hosted-model round trips.
 - **Pydantic v2** validates every model response and API payload in `app/ai/schemas.py`
   (`extra="forbid"`, value bounds, enums). **pydantic-settings** `BaseSettings` in
   `app/core/config.py` loads typed settings from the environment and `.env`, with API keys held as
@@ -139,7 +142,7 @@ sell-or-discard advice.
   and input size/format limits.
 - **Single-command Docker deployment** with a backend healthcheck and a persistent history volume.
 - **Interactive API docs** at `/docs` and a `/health` endpoint.
-- **Automated checks**: 119 tests with mocked AI clients, a coverage report, and lint/format/type
+- **Automated checks**: 127 tests with mocked AI clients, a coverage report, and lint/format/type
   gates (see §15).
 
 ## 4. System context
@@ -178,6 +181,7 @@ uses Gemini 3.5 Transcribe, regardless of the selected vision provider.
 | `app/services/category_service.py` | Category validation, slug generation, limits, and lifecycle rules |
 | `app/services/report_service.py` | Orchestrates transcription, AI narrative, PDF rendering, and report persistence |
 | `app/ai/provider_factory.py` | Builds the configured `VisionDetector` from settings (no network at construction) |
+| `app/ai/client_factory.py` | Caches one Groq/Gemini SDK client per credential with bounded request timeouts |
 | `app/ai/produce_groq.py` | Groq vision provider: base64 image prompt, JSON-mode response, schema validation |
 | `app/ai/produce_gemini.py` | Gemini provider: structured JSON schemas for analysis and defect localization |
 | `app/ai/groq_report.py` | One-shot report writing with validated JSON output |
@@ -216,14 +220,16 @@ sequenceDiagram
     S->>D: detect(image)
     D->>D: prompt + JSON-structured call, Finding validation
     D-->>S: Finding
-    S->>D: locate_defect(image, finding) for reported defects
-    D-->>S: refined bbox or none
     S->>S: deterministic grade + verdict + notes
     S->>DB: save result_json, thumbnail, original image, annotated JPEG when a bbox exists
+    S-->>API: InspectionResult
+    API-->>UI: verdict, grade, defects, severity, action (report not ready yet)
+    API->>S: finalize_inspection(id) as a background task
+    S->>D: locate_defect only when the analysis returned no box
+    D-->>S: refined bbox or none
+    S->>DB: update result_json and annotated JPEG when a box was added
     S->>S: generate_automatic_report(id) for edible products
     S->>DB: save report row (or leave NULL when unavailable)
-    S-->>API: InspectionResult
-    API-->>UI: verdict, grade, defects, severity, action, report_available
 ```
 
 ### 6.2 Automatic PDF report with fallback
@@ -241,6 +247,9 @@ sequenceDiagram
     UI->>API: POST /inspections/product
     API->>S: inspect_produce(image)
     S->>DB: save result, thumbnail, original image
+    S-->>API: InspectionResult (report_available = false)
+    API-->>UI: verdict and grade
+    API->>S: finalize_inspection(id) in the background
     S->>R: generate_automatic_report(id) for edible products
     R->>DB: load original image + stored result
     Note over R: Any voice-note transcript was produced by Gemini at inspection time and stored on the result
@@ -252,10 +261,13 @@ sequenceDiagram
     end
     R->>R: reportlab render (original photo + bbox drawn in memory)
     R->>DB: upsert report narrative (no PDF is stored)
-    R-->>S: report_available
-    S-->>API: InspectionResult
-    API-->>UI: result + report_available
 ```
+
+For both photo and voice inspections the report portion of this flow runs after the response has
+been sent, so a freshly returned result has `report_available=false` until the report row is saved.
+The web UI polls history briefly to reveal the download button once the report is ready. Voice
+transcription and transcript analysis stay on the response path because the transcript is the
+evidence behind the verdict.
 
 Every edible product, including fruit outside the inspection categories, gets the same report
 layout. Non-edible items get no PDF. When AI report writing fails, the deterministic narrative is
@@ -284,7 +296,8 @@ connection. All queries are parameterized.
 CREATE TABLE inspections (
     inspection_id       TEXT PRIMARY KEY,
     created_at          TEXT NOT NULL,    -- ISO-8601 UTC
-    produce_type        TEXT NOT NULL,
+    produce_type        TEXT NOT NULL,    -- matched category slug, or "unknown"
+    detected_item       TEXT NOT NULL DEFAULT '',  -- real product name (e.g. grapes)
     verdict             TEXT NOT NULL,    -- pass | defect | needs_review
     grade               TEXT NOT NULL,    -- A | B | Reject | Needs manual review
     thumbnail_path      TEXT,             -- relative to the data directory
@@ -309,6 +322,11 @@ CREATE TABLE inspection_reports (
     report_text_json TEXT NOT NULL,      -- validated InspectionReportText
 );
 ```
+
+`produce_type` records which configured category matched (`"unknown"` for anything outside the
+active categories), while `detected_item` keeps the actual product name such as "grapes". Both are
+stored as columns; older databases gain `detected_item` on first use, backfilled from `result_json`.
+The UI, PDF, and history API show `detected_item`.
 
 The original four categories are seeded once per database. Active category slugs are loaded for
 every new inspection and passed to the vision prompt. Renaming changes only `display_name`; the
@@ -365,6 +383,10 @@ flowchart LR
 
 - `VisionDetector` is a callable protocol (`__call__(image) -> Finding`) in `app/ai/providers.py`;
   both providers implement it and raise `DetectionError` on failure.
+- **Client reuse and latency bounds.** `app/ai/client_factory.py` caches one Groq/Gemini SDK client
+  per credential with a bounded request timeout (`GROQ_TIMEOUT_SECONDS`, `GEMINI_TIMEOUT_MS`) so a
+  stalled provider cannot hold a worker thread indefinitely and no request pays for a new TLS
+  handshake. Gemini transient retries are capped by `GEMINI_MAX_FALLBACKS` with a short backoff.
 - **Groq** (`qwen/qwen3.8-27b` by default) receives a base64 JPEG with
   `response_format={"type": "json_object"}` and temperature 0 for determinism.
 - **Gemini** sends an inline JPEG with `responseMimeType=application/json` and a `responseSchema`
@@ -446,11 +468,15 @@ Logs record exception *types*, never keys or personal data.
 | `GROQ_API_KEY` | *(empty)* | Required for Groq vision and report writing |
 | `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Vision model |
 | `GROQ_REPORT_MODEL` | `openai/gpt-oss-20b` | Report narrative model |
+| `GROQ_TIMEOUT_SECONDS` | `20` | Request timeout for cached Groq clients |
 | `GEMINI_API_KEY` | *(empty)* | Required for Gemini vision and all voice-note transcription |
 | `GEMINI_TRANSCRIPTION_MODEL` | `gemini-3.5-transcribe` | Transcription model for all voice notes |
 | `GEMINI_VISION_MODEL` | `gemini-4-hydrogen` | Analysis model |
 | `GEMINI_LOCALIZATION_MODEL` | `gemini-3.5-flash-lite` | Second-stage defect box model |
 | `GEMINI_FALLBACK_MODELS` | `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite` | Tried on transient model errors |
+| `GEMINI_MAX_FALLBACKS` | `2` | Maximum fallback models tried after the primary |
+| `GEMINI_FALLBACK_BACKOFF_SECONDS` | `0.5` | Pause between consecutive fallback attempts |
+| `GEMINI_TIMEOUT_MS` | `20000` | Request timeout for cached Gemini clients |
 | `INSPECTION_DB_PATH` | `data/inspections.sqlite3` | Absolute in Docker (`/app/data/...`) |
 | `FRONTEND_ORIGIN` | `http://localhost:3000` | Allowed CORS origin for the separate frontend |
 | `VITE_API_BASE_URL` | `http://localhost:8000` | API URL baked into the frontend at build time |
@@ -475,7 +501,7 @@ fallback for routes such as `/categories`. CORS middleware in FastAPI allows the
 
 ## 15. Testing
 
-`uv run pytest --cov=app --cov-report=term-missing` — 119 tests, 87% line coverage.
+`uv run pytest --cov=app --cov-report=term-missing` — 127 tests, 87% line coverage.
 
 - `tests/test_api.py` — route behavior, status-code mapping, pagination, oversized/invalid
   uploads, report routes, an end-to-end happy path through the API with a mocked detector.
@@ -499,6 +525,9 @@ network-free; no test calls a live provider.
 - The bounding box is returned by the API, drawn by the backend into a saved annotated JPEG, and
   rendered in the PDF. The result panel shows that image when coordinates are available, but does
   not yet display the confidence score.
+- A photo inspection's PDF is generated after the response is sent, so the first response reports
+  `report_available=false`; the download button appears once the UI's short history poll sees the
+  saved report. Closing the page early does not cancel the background work.
 - No audio-duration limit is enforced (size and post-transcription length are).
 - The Gemini vision and transcription paths are implemented and unit-tested with mocked clients,
   but have no documented live run or performance numbers. Inference uses hosted API models only;

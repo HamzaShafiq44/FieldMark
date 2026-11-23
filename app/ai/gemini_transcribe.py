@@ -7,6 +7,7 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 
+from app.ai.client_factory import get_gemini_transcription_client
 from app.ai.errors import ReportAIError
 from app.core.config import settings
 
@@ -51,7 +52,7 @@ def transcribe_voice_note(data: bytes, filename: str) -> str:
     if not key:
         raise ReportAIError("GEMINI_API_KEY is not configured.")
     mime_type = MIME_TYPES.get(Path(filename).suffix.lower(), DEFAULT_MIME_TYPE)
-    client = genai.Client(api_key=key, http_options={"api_version": "v1beta"})
+    client = get_gemini_transcription_client(settings.gemini_api_key)
     uploaded = None
     try:
         with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix) as temp:

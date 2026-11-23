@@ -41,6 +41,8 @@ import { prepareRecording, SILENCE_PEAK_THRESHOLD } from '../utils/audio'
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const MAX_VOICE_NOTE_BYTES = 25 * 1024 * 1024
 const PDF_URL_REVOKE_DELAY_MS = 1_000
+const REPORT_POLL_INTERVAL_MS = 2_000
+const REPORT_POLL_MAX_ATTEMPTS = 20
 const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const ACCEPTED_VOICE_NOTE_TYPES = new Set([
   'audio/mpeg',
@@ -284,6 +286,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
   const [activeDeviceLabel, setActiveDeviceLabel] = useState<string | null>(null)
   const [reportActionId, setReportActionId] = useState<string | null>(null)
+  const [reportPending, setReportPending] = useState(false)
   const [reportError, setReportError] = useState<string | null>(null)
   const [relocationId, setRelocationId] = useState<string | null>(null)
   const [relocationError, setRelocationError] = useState<string | null>(null)
@@ -354,6 +357,45 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
       setIsHistoryLoading(false)
     }
   }, [])
+
+  // Reports are generated after the inspection response is sent. Poll
+  // history briefly so the download button appears once the PDF is ready.
+  useEffect(() => {
+    if (!result || result.report_available) return
+    let active = true
+    let attempts = 0
+    const timer = window.setInterval(() => {
+      attempts += 1
+      listInspectionHistory()
+        .then((items) => {
+          if (!active) return
+          setHistory(items)
+          const stored = items.find((item) => item.inspection_id === result.inspection_id)
+          if (stored?.report_available) {
+            setResult((current) =>
+              current && current.inspection_id === result.inspection_id
+                ? { ...current, report_available: true }
+                : current,
+            )
+            setReportPending(false)
+            window.clearInterval(timer)
+          } else if (attempts >= REPORT_POLL_MAX_ATTEMPTS) {
+            setReportPending(false)
+            window.clearInterval(timer)
+          }
+        })
+        .catch(() => {
+          if (active) {
+            setReportPending(false)
+            window.clearInterval(timer)
+          }
+        })
+    }, REPORT_POLL_INTERVAL_MS)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [result])
 
   useEffect(() => {
     let active = true
@@ -769,6 +811,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
       const inspection =
         kind === 'voice' ? await inspectVoiceNote(voiceNoteFile!) : await inspectProduce(file!)
       setResult(inspection)
+      setReportPending(!inspection.report_available)
       onApiStatusChange('connected')
       void refreshHistory()
     } catch (caught: unknown) {
@@ -795,6 +838,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
     setPreviewUrl(null)
     setFile(null)
     setResult(null)
+    setReportPending(false)
     if (isRecording) stopRecording()
     setVoiceNoteFile(null)
     updateVoiceAudioUrl(null)
@@ -853,6 +897,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
       await clearInspectionHistory()
       setHistory([])
       setResult(null)
+      setReportPending(false)
       if (isRecording) stopRecording()
       setVoiceNoteFile(null)
       updateVoiceAudioUrl(null)
@@ -1440,7 +1485,9 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                         ? isVoiceOnlyResult
                           ? 'Your PDF is ready with the grade and transcript from your voice note.'
                           : 'Your PDF is ready.'
-                        : 'The PDF could not be created for this inspection.'}
+                        : reportPending
+                          ? 'Your PDF is being prepared in the background and will appear here shortly.'
+                          : 'The PDF could not be created for this inspection.'}
                   </p>
                 </div>
                 {result.report_available && !isUnsupportedItem && (
@@ -1462,7 +1509,9 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                   </button>
                 )}
                 {!result.report_available && (
-                  <p className="report-unavailable">Report unavailable.</p>
+                  <p className="report-unavailable">
+                    {reportPending && !isUnsupportedItem ? 'Preparing PDF…' : 'Report unavailable.'}
+                  </p>
                 )}
                 {reportError && (
                   <p className="report-error" role="alert">

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 
@@ -21,6 +21,7 @@ from app.services.inspection_service import (
     RelocationStorageError,
     RelocationVisionError,
     clear_inspection_history,
+    finalize_inspection,
     get_inspection_annotated,
     get_inspection_original,
     get_inspection_thumbnail,
@@ -78,6 +79,7 @@ VOICE_NOTE_GENERIC_MEDIA_TYPES = frozenset({"", "application/octet-stream"})
 @router.post("/produce", response_model=InspectionResult, include_in_schema=False)
 @router.post("/product", response_model=InspectionResult)
 async def inspect_product_route(
+    background_tasks: BackgroundTasks,
     image: Annotated[UploadFile | None, File()] = None,
     voice_note: Annotated[UploadFile | None, File()] = None,
 ) -> InspectionResult:
@@ -118,6 +120,9 @@ async def inspect_product_route(
                 result.grade,
                 result.bbox,
             )
+            # The verdict is ready now; the optional second vision call and PDF
+            # report generation run after the response is sent.
+            background_tasks.add_task(finalize_inspection, result.inspection_id)
             return result
         except InvalidImageError as exc:
             LOGGER.warning("Invalid image uploaded: %s", exc)
@@ -140,6 +145,7 @@ async def inspect_product_route(
             )
         try:
             result = await run_in_threadpool(inspect_from_voice, voice_data, voice_filename)
+            background_tasks.add_task(finalize_inspection, result.inspection_id)
             return result
         except InspectionStorageError as exc:
             LOGGER.error("Inspection storage failed: %s", exc)

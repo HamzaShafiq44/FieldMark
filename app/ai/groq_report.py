@@ -7,6 +7,7 @@ import groq
 from groq import Groq
 from pydantic import SecretStr, ValidationError
 
+from app.ai.client_factory import get_groq_client
 from app.ai.errors import ReportAIError
 from app.ai.schemas import InspectionReportText, InspectionResult, ReportUserType
 from app.core.config import DEFAULT_GROQ_REPORT_MODEL, settings
@@ -86,11 +87,11 @@ def write_inspection_report(
 
 
 def _groq_client(api_key: SecretStr) -> Groq:
-    """Create an explicitly authenticated Groq client."""
+    """Return a reusable, time-bounded Groq client for report writing."""
     key = api_key.get_secret_value()
     if not key:
         raise ReportAIError("GROQ_API_KEY is not configured for report generation.")
-    return Groq(api_key=key)
+    return get_groq_client(api_key)
 
 
 def _provider_failure(exc: groq.APIError, operation: str) -> ReportAIError:

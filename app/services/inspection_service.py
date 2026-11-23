@@ -222,15 +222,18 @@ def _normalize_category(finding: Finding, active_slugs: list[str]) -> Finding:
 
 
 def _localize_defect(finding: Finding, detector: VisionDetector, image: Image.Image) -> Finding:
-    """Refine the analysis box with a dedicated localization call.
+    """Supply a defect box with a second call only when the analysis has none.
 
-    The analysis call already provides a box. A second, focused call tries to
-    improve it, but the analysis box is kept when that call fails or returns
-    nothing. This way a working analysis still produces an annotated image
-    even if the refinement step is unavailable.
+    The analysis call already returns a validated box in the normal case. A
+    focused second call is reserved for the rare case where a defect was found
+    but no coordinates came back, so a standard inspection never pays for two
+    vision round trips. The finding is left untouched when that call fails.
     """
     has_defect = bool(finding.defect_types) or finding.condition == Condition.ROTTEN
     if not finding.item_is_fruit or not has_defect:
+        return finding
+    if finding.bbox is not None:
+        LOGGER.debug("Analysis returned a bbox; skipping defect localization.")
         return finding
     locate = getattr(detector, "locate_defect", None)
     if not callable(locate):
@@ -241,6 +244,70 @@ def _localize_defect(finding: Finding, detector: VisionDetector, image: Image.Im
         LOGGER.warning("Defect localization failed; keeping the analysis box.")
         return finding
     return finding if bbox is None else finding.model_copy(update={"bbox": bbox})
+
+
+def _finding_from_result(result: InspectionResult) -> Finding:
+    """Rebuild the finding used to re-localize a stored inspection result."""
+    observation = next(
+        (
+            note.removeprefix("Visual observation: ")
+            for note in result.verdict_notes
+            if note.startswith("Visual observation: ")
+        ),
+        "",
+    )
+    return Finding(
+        produce_type=result.produce_type,
+        detected_item=result.detected_item,
+        item_is_fruit=result.item_is_fruit,
+        condition=Condition.ROTTEN if result.grade == "Reject" else Condition.FRESH,
+        confidence=result.confidence or 0.0,
+        defect_types=result.defect_types,
+        severity=result.severity,
+        visual_observation=observation,
+        bbox=result.bbox,
+    )
+
+
+def finalize_inspection(inspection_id: str) -> None:
+    """Refine a missing defect box and build the report after the response is sent.
+
+    This runs as a FastAPI background task for both photo and voice inspections.
+    The response only waits for the evidence-gathering calls and persistence;
+    optional localization, report writing, and PDF rendering happen here.
+    """
+    repository = InspectionRepository(settings.inspection_db_path)
+    try:
+        source = repository.get_report_source(inspection_id)
+    except HistoryStorageError as exc:
+        LOGGER.warning("Inspection could not be loaded for finalization: %s", exc)
+        return
+    if source is None:
+        return
+
+    result = source.result
+    if source.original_image is not None:
+        original_image = source.original_image
+        try:
+            detector = create_vision_detector(supported_types=list_active_category_slugs())
+            refined = _localize_defect(
+                _finding_from_result(result), detector, load_and_validate_image(original_image)
+            )
+            if refined.bbox is not None and refined.bbox != result.bbox:
+                updated = result.model_copy(update={"bbox": refined.bbox})
+                repository.update_result(inspection_id, updated.model_dump_json())
+                repository.save_annotated(
+                    inspection_id, annotate_photo(original_image, refined.bbox)
+                )
+                result = updated
+        except (DetectionError, InvalidImageError, HistoryStorageError) as exc:
+            LOGGER.warning("Defect refinement during finalization failed (%s).", type(exc).__name__)
+
+    if _is_edible_product(result) or _should_report_voice(result):
+        try:
+            generate_automatic_report(inspection_id)
+        except Exception:
+            LOGGER.exception("Automatic report generation failed unexpectedly.")
 
 
 def relocate_defect(inspection_id: str) -> InspectionResult:
@@ -264,28 +331,11 @@ def relocate_defect(inspection_id: str) -> InspectionResult:
     if not result.item_is_fruit or not has_defect:
         raise RelocationNotApplicableError("This inspection does not report a defect to locate.")
 
-    observation = next(
-        (
-            note.removeprefix("Visual observation: ")
-            for note in result.verdict_notes
-            if note.startswith("Visual observation: ")
-        ),
-        "",
-    )
-    finding = Finding(
-        produce_type=result.produce_type,
-        detected_item=result.detected_item,
-        item_is_fruit=result.item_is_fruit,
-        condition=Condition.ROTTEN if result.grade == "Reject" else Condition.FRESH,
-        confidence=result.confidence or 0.0,
-        defect_types=result.defect_types,
-        severity=result.severity,
-        visual_observation=observation,
-    )
     detector = create_vision_detector(supported_types=list_active_category_slugs())
     locate = getattr(detector, "locate_defect", None)
     if not callable(locate):
         raise RelocationVisionError("The configured vision provider cannot locate defects.")
+    finding = _finding_from_result(result)
     try:
         bbox = cast("BBox | None", locate(load_and_validate_image(source.original_image), finding))
     except DetectionError as exc:
@@ -304,9 +354,7 @@ def relocate_defect(inspection_id: str) -> InspectionResult:
     return updated
 
 
-def _voice_verdict_notes(
-    finding: Finding, grade_value: Grade, verdict_value: Verdict
-) -> list[str]:
+def _voice_verdict_notes(finding: Finding, grade_value: Grade, verdict_value: Verdict) -> list[str]:
     """Explain a voice-only decision without claiming anything was seen."""
     notes: list[str] = []
     observation = finding.visual_observation.strip()
@@ -345,7 +393,8 @@ def inspect_from_voice(audio_data: bytes, filename: str) -> InspectionResult:
 
     The transcript is the only evidence, so the spoken product and condition are
     extracted into a Finding and passed through the same grading rules used for
-    photos. Voice-only records have no image files but do receive PDF reports.
+    photos. Voice-only records have no image files but do receive PDF reports,
+    generated later by ``finalize_inspection`` after the response is sent.
     """
     from app.ai.transcription import transcribe_voice_note
     from app.ai.voice_analysis import analyze_transcript
@@ -379,13 +428,7 @@ def inspect_from_voice(audio_data: bytes, filename: str) -> InspectionResult:
     except HistoryStorageError as exc:
         raise InspectionStorageError(str(exc)) from exc
 
-    report_available = False
-    if _should_report_voice(result):
-        try:
-            report_available = generate_automatic_report(result.inspection_id)
-        except Exception:
-            LOGGER.exception("Automatic voice report generation failed unexpectedly.")
-    return result.model_copy(update={"report_available": report_available})
+    return result
 
 
 def inspect_produce(
@@ -393,7 +436,12 @@ def inspect_produce(
     detect: VisionDetector | None = None,
     supported_types: list[str] | None = None,
 ) -> InspectionResult:
-    """Validate, analyze, and grade an uploaded product image."""
+    """Validate, analyze, and grade an uploaded product image.
+
+    Only the analysis call is on the response path. Defect refinement and PDF
+    report generation are deferred to ``finalize_inspection`` so the farmer sees
+    a verdict without waiting for two more hosted-model round trips.
+    """
     supported = supported_types or list_active_category_slugs()
     image = load_and_validate_image(data)
     detector = detect
@@ -404,7 +452,6 @@ def inspect_produce(
     except DetectionError as exc:
         raise InspectionDetectionError("Vision detection failed.") from exc
     finding = _normalize_category(finding, supported)
-    finding = _localize_defect(finding, detector, image)
     grade_value, action = grade(finding)
     verdict_value = _verdict(grade_value, finding)
     result = InspectionResult(
@@ -423,13 +470,7 @@ def inspect_produce(
         recommended_action=action,
     )
     save_inspection_history(result, image, data)
-    report_available = False
-    if _is_edible_product(result):
-        try:
-            report_available = generate_automatic_report(result.inspection_id)
-        except Exception:
-            LOGGER.exception("Automatic report generation failed unexpectedly.")
-    return result.model_copy(update={"report_available": report_available})
+    return result
 
 
 def save_inspection_history(

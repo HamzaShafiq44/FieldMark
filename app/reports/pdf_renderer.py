@@ -136,8 +136,7 @@ class _OutcomeCard(Flowable):
         grade_size = 34 if len(grade_label) <= 2 else 20
         while (
             grade_size > 11
-            and pdfmetrics.stringWidth(grade_label, BOLD_FONT_NAME, grade_size)
-            > tile - 0.2 * inch
+            and pdfmetrics.stringWidth(grade_label, BOLD_FONT_NAME, grade_size) > tile - 0.2 * inch
         ):
             grade_size -= 1
         canvas.setFont(BOLD_FONT_NAME, grade_size)
@@ -208,10 +207,14 @@ class _OutcomeCard(Flowable):
         else:
             ratio = max(0.0, min(1.0, float(result.confidence)))
             canvas.setFillColor(TRACK)
-            canvas.roundRect(bar_x, meter_y, bar_width, bar_height, bar_height / 2, fill=1, stroke=0)
+            canvas.roundRect(
+                bar_x, meter_y, bar_width, bar_height, bar_height / 2, fill=1, stroke=0
+            )
             fill_width = max(bar_height, bar_width * ratio)
             canvas.setFillColor(LEAF if accent == INK else accent)
-            canvas.roundRect(bar_x, meter_y, fill_width, bar_height, bar_height / 2, fill=1, stroke=0)
+            canvas.roundRect(
+                bar_x, meter_y, fill_width, bar_height, bar_height / 2, fill=1, stroke=0
+            )
             canvas.setFillColor(INK)
             canvas.setFont(BOLD_FONT_NAME, 7.2)
             canvas.drawString(bar_x + bar_width + 0.1 * inch, meter_y - 0.4, f"{ratio:.0%}")
@@ -738,9 +741,7 @@ def _draw_page_chrome(
     # Report title and metadata on the right.
     canvas.setFillColor(LIME)
     canvas.setFont(BOLD_FONT_NAME, 8.5)
-    canvas.drawRightString(
-        page_width - PAGE_MARGIN, logo_y + 0.23 * inch, "INSPECTION REPORT"
-    )
+    canvas.drawRightString(page_width - PAGE_MARGIN, logo_y + 0.23 * inch, "INSPECTION REPORT")
     canvas.setFillColor(HEADER_SUBTLE)
     canvas.setFont(REGULAR_FONT_NAME, 6.4)
     canvas.drawRightString(

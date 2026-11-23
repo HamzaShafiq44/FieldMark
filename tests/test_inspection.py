@@ -9,7 +9,14 @@ from PIL import Image
 from app.ai.providers import DetectionError
 from app.ai.schemas import Condition, DefectType, Finding, ProduceType, Severity
 from app.core.config import settings
-from app.services.inspection_service import InvalidImageError, grade, inspect_produce
+from app.services import inspection_service
+from app.services.inspection_service import (
+    InvalidImageError,
+    finalize_inspection,
+    grade,
+    inspect_produce,
+)
+from app.storage.inspection_repository import InspectionRepository
 
 GRADE_CASES = [
     (
@@ -259,8 +266,8 @@ class _FakeLocator:
         return self.bbox
 
 
-def test_localization_supplies_the_result_bbox() -> None:
-    """Use the second-stage coordinates, not the stray box from the analysis call."""
+def test_analysis_box_skips_localization() -> None:
+    """Keep the analysis box without paying for a second vision call."""
     finding = Finding(
         produce_type=ProduceType.TOMATO,
         item_is_fruit=True,
@@ -272,8 +279,8 @@ def test_localization_supplies_the_result_bbox() -> None:
     )
     detector = _FakeLocator(finding, (0.3, 0.4, 0.6, 0.7))
     result = inspect_produce(_jpeg_bytes(), detect=detector)
-    assert detector.calls == 1
-    assert result.bbox == (0.3, 0.4, 0.6, 0.7)
+    assert detector.calls == 0
+    assert result.bbox == (0.1, 0.1, 0.2, 0.2)
 
 
 def test_localization_is_skipped_for_fresh_produce() -> None:
@@ -291,8 +298,39 @@ def test_localization_is_skipped_for_fresh_produce() -> None:
     assert result.bbox is None
 
 
-def test_localization_failure_keeps_analysis_box() -> None:
-    """Keep the analysis box when the second-stage call fails."""
+def test_finalization_localizes_when_analysis_has_no_box(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run the second-stage call in the background only when a box is missing."""
+    finding = Finding(
+        produce_type=ProduceType.TOMATO,
+        item_is_fruit=True,
+        condition=Condition.FRESH,
+        confidence=0.9,
+        defect_types=[DefectType.BRUISE],
+        severity=Severity.LOW,
+    )
+    detector = _FakeLocator(finding, (0.3, 0.4, 0.6, 0.7))
+    result = inspect_produce(_jpeg_bytes(), detect=detector)
+    assert result.bbox is None
+
+    monkeypatch.setattr(inspection_service, "create_vision_detector", lambda **_: detector)
+    finalize_inspection(result.inspection_id)
+
+    stored = InspectionRepository(settings.inspection_db_path).get_report_source(
+        result.inspection_id
+    )
+    assert stored is not None
+    assert stored.result.bbox == (0.3, 0.4, 0.6, 0.7)
+    assert detector.calls == 1
+    annotated = (
+        settings.inspection_db_path.parent / "images" / f"{result.inspection_id}_annotated.jpg"
+    )
+    assert annotated.is_file()
+
+
+def test_localization_failure_keeps_original_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave the stored result untouched when background localization fails."""
 
     class _FailingLocator(_FakeLocator):
         def locate_defect(
@@ -306,10 +344,17 @@ def test_localization_failure_keeps_analysis_box() -> None:
         item_is_fruit=True,
         condition=Condition.ROTTEN,
         confidence=0.9,
-        bbox=(0.1, 0.1, 0.2, 0.2),
     )
     detector = _FailingLocator(finding, None)
     result = inspect_produce(_jpeg_bytes(), detect=detector)
-    assert detector.calls == 1
-    assert result.bbox == (0.1, 0.1, 0.2, 0.2)
     assert result.grade == "Reject"
+
+    monkeypatch.setattr(inspection_service, "create_vision_detector", lambda **_: detector)
+    finalize_inspection(result.inspection_id)
+
+    stored = InspectionRepository(settings.inspection_db_path).get_report_source(
+        result.inspection_id
+    )
+    assert stored is not None
+    assert stored.result.bbox is None
+    assert detector.calls == 1

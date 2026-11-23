@@ -108,20 +108,20 @@ def test_annotated_photo_is_included_for_reported_defect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Include the second photo only when a defect and its location are reported."""
-    result = inspection_service.inspect_produce(
-        _jpeg_bytes(),
-        detect=_LocatingDetector(
-            Finding(
-                produce_type=ProduceType.APPLE,
-                item_is_fruit=True,
-                condition=Condition.FRESH,
-                confidence=0.8,
-                defect_types=[DefectType.BRUISE],
-                severity=Severity.LOW,
-            ),
-            (0.2, 0.2, 0.8, 0.8),
+    locator = _LocatingDetector(
+        Finding(
+            produce_type=ProduceType.APPLE,
+            item_is_fruit=True,
+            condition=Condition.FRESH,
+            confidence=0.8,
+            defect_types=[DefectType.BRUISE],
+            severity=Severity.LOW,
         ),
+        (0.2, 0.2, 0.8, 0.8),
     )
+    result = inspection_service.inspect_produce(_jpeg_bytes(), detect=locator)
+    monkeypatch.setattr(inspection_service, "create_vision_detector", lambda **_: locator)
+    inspection_service.finalize_inspection(result.inspection_id)
     monkeypatch.setattr(report_service, "write_inspection_report", lambda *_: _report_text())
 
     pdf = report_service.generate_inspection_report(result.inspection_id, ReportUserType.FARMER)
@@ -133,21 +133,26 @@ def test_annotated_photo_is_included_for_reject_without_defect_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Show the boxed photo when Reject comes from spoilage, not a labeled defect."""
-    result = inspection_service.inspect_produce(
-        _jpeg_bytes(),
-        detect=_LocatingDetector(
-            Finding(
-                produce_type=ProduceType.TOMATO,
-                item_is_fruit=True,
-                condition=Condition.ROTTEN,
-                confidence=0.9,
-                severity=Severity.NONE,
-            ),
-            (0.2, 0.2, 0.8, 0.8),
+    locator = _LocatingDetector(
+        Finding(
+            produce_type=ProduceType.TOMATO,
+            item_is_fruit=True,
+            condition=Condition.ROTTEN,
+            confidence=0.9,
+            severity=Severity.NONE,
         ),
+        (0.2, 0.2, 0.8, 0.8),
     )
+    result = inspection_service.inspect_produce(_jpeg_bytes(), detect=locator)
     assert result.grade == "Reject"
-    assert result.bbox is not None
+    assert result.bbox is None
+    monkeypatch.setattr(inspection_service, "create_vision_detector", lambda **_: locator)
+    inspection_service.finalize_inspection(result.inspection_id)
+    stored = InspectionRepository(settings.inspection_db_path).get_report_source(
+        result.inspection_id
+    )
+    assert stored is not None
+    assert stored.result.bbox == (0.2, 0.2, 0.8, 0.8)
     monkeypatch.setattr(report_service, "write_inspection_report", lambda *_: _report_text())
 
     pdf = report_service.generate_inspection_report(result.inspection_id, ReportUserType.FARMER)
@@ -335,7 +340,7 @@ def test_groq_report_writer_passes_context_and_validates_output(
     ]
     client = Mock()
     client.chat.completions.create.return_value = response
-    with patch("app.ai.groq_report.Groq", return_value=client) as groq_client:
+    with patch("app.ai.client_factory.Groq", return_value=client) as groq_client:
         report = groq_report.write_inspection_report(
             inspection_service.inspect_produce(
                 _jpeg_bytes(),
@@ -349,7 +354,11 @@ def test_groq_report_writer_passes_context_and_validates_output(
             "I noticed a soft spot.",
         )
 
-    groq_client.assert_called_once_with(api_key="report-test-key")
+    groq_client.assert_called_once_with(
+        api_key="report-test-key",
+        timeout=settings.groq_timeout_seconds,
+        max_retries=1,
+    )
     request = client.chat.completions.create.call_args.kwargs
     context = json.loads(request["messages"][1]["content"])
     assert request["model"] == "openai/gpt-oss-20b"
@@ -498,7 +507,7 @@ def test_legacy_image_blobs_are_moved_to_files(tmp_path: Path) -> None:
 def test_automatic_report_is_persisted_for_an_edible_product(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Generate the default PDF during inspection without a user action."""
+    """Generate the default PDF in the background without a user action."""
     monkeypatch.setattr(
         inspection_service, "generate_automatic_report", report_service.generate_automatic_report
     )
@@ -513,7 +522,8 @@ def test_automatic_report_is_persisted_for_an_edible_product(
             confidence=0.9,
         ),
     )
-    assert result.report_available is True
+    assert result.report_available is False
+    inspection_service.finalize_inspection(result.inspection_id)
     pdf = report_service.get_inspection_report(result.inspection_id)
     assert pdf is not None
     assert pdf.startswith(b"%PDF-")
@@ -538,7 +548,8 @@ def test_automatic_report_uses_the_normal_layout_for_out_of_category_food(
         ),
     )
     assert result.in_inspection_categories is False
-    assert result.report_available is True
+    assert result.report_available is False
+    inspection_service.finalize_inspection(result.inspection_id)
     pdf = report_service.get_inspection_report(result.inspection_id)
     assert pdf is not None
     assert pdf.startswith(b"%PDF-")
@@ -564,7 +575,8 @@ def test_automatic_report_falls_back_when_ai_writing_fails(
             confidence=0.9,
         ),
     )
-    assert result.report_available is True
+    assert result.report_available is False
+    inspection_service.finalize_inspection(result.inspection_id)
     pdf = report_service.get_inspection_report(result.inspection_id)
     assert pdf is not None
     assert pdf.startswith(b"%PDF-")
@@ -614,15 +626,24 @@ def test_voice_only_report_renders_and_rebuilds_without_photo(
     ]
     client = Mock()
     client.chat.completions.create.return_value = response
-    with patch(
-        "app.ai.transcription.transcribe_voice_note", return_value="My apple is rotten."
+    spoken_finding = Finding(
+        produce_type=ProduceType.APPLE,
+        detected_item="Apple",
+        item_is_fruit=True,
+        condition=Condition.ROTTEN,
+        confidence=0.9,
+        defect_types=[DefectType.ROT],
+        severity=Severity.HIGH,
+        visual_observation="The speaker reported a rotten apple.",
+    )
+    with (
+        patch("app.ai.transcription.transcribe_voice_note", return_value="My apple is rotten."),
+        patch("app.ai.voice_analysis.analyze_transcript", return_value=spoken_finding),
     ):
         result = inspection_service.inspect_from_voice(b"audio", "note.m4a")
 
-    with patch("app.ai.groq_report.Groq", return_value=client):
-        pdf = report_service.generate_inspection_report(
-            result.inspection_id, ReportUserType.FARMER
-        )
+    with patch("app.ai.client_factory.Groq", return_value=client):
+        pdf = report_service.generate_inspection_report(result.inspection_id, ReportUserType.FARMER)
     assert pdf.startswith(b"%PDF")
     rebuilt = report_service.get_inspection_report(result.inspection_id)
     assert rebuilt is not None
