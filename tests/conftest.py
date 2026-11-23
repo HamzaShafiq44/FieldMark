@@ -38,9 +38,9 @@ def disable_background_finalization(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def offline_groq_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Never call the live Groq service from unit tests."""
-    monkeypatch.setattr(settings, "groq_api_key", SecretStr(""))
+def offline_gemini_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never call the live Gemini service from unit tests."""
+    monkeypatch.setattr(settings, "gemini_api_key", SecretStr(""))
 
 
 @pytest.fixture(autouse=True)

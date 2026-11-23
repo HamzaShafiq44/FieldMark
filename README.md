@@ -24,6 +24,8 @@ downloadable PDF report. Built as a software-only MVP for farmers grading produc
   is ready.
 - **History and categories** — browse past inspections with thumbnails and report status, and manage
   the products the inspector expects.
+- **Inspection review** — open any saved inspection in a read-only overlay to see the full result,
+  evidence photos, transcript, and written report without downloading the PDF again.
 
 Full list: [ARCHITECTURE.md — Feature list](ARCHITECTURE.md#3-feature-list).
 
@@ -106,6 +108,7 @@ Full list: [ARCHITECTURE.md — Configuration](ARCHITECTURE.md#13-configuration)
 |---|---|---|
 | POST | `/inspections/product` | Inspect a photo or a voice note (multipart) |
 | GET | `/inspections/history?limit&offset` | Paginated inspection history |
+| GET | `/inspections/history/{id}` | Full stored result and written report for one inspection |
 | DELETE | `/inspections/history` | Clear all history, images, and reports |
 | GET | `/inspections/history/{id}/thumbnail` | 192×192 preview image |
 | GET | `/inspections/{id}/report?download=true` | Rebuild and download the PDF |
@@ -149,6 +152,7 @@ app/
   core/         Environment-driven settings
 frontend/src/
   pages/        InspectPage and CategoriesPage
+  components/   ReviewDrawer (read-only inspection review overlay)
   services/     Typed API clients
   utils/        Audio helpers
 tests/          Backend tests (AI clients mocked)
@@ -158,7 +162,7 @@ data/           Local SQLite database and images (gitignored)
 ## Testing
 
 ```bash
-# backend: 143 tests, ~87% coverage; AI clients are mocked so the suite is offline
+# backend: 148 tests, ~87% coverage; AI clients are mocked so the suite is offline
 uv run pytest --cov=app --cov-report=term-missing
 uv run ruff check .
 uv run ruff format --check .

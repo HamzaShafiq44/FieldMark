@@ -11,14 +11,16 @@ import json
 import logging
 import re
 
-import groq
+from google import genai
+from google.genai import types
 from pydantic import ValidationError
 
-from app.ai.client_factory import get_groq_client
+from app.ai.client_factory import get_gemini_client
 from app.ai.errors import ReportAIError
+from app.ai.produce_gemini import FINDING_SCHEMA
 from app.ai.prompt_config import load_prompt
 from app.ai.schemas import Condition, DefectType, Finding, Severity
-from app.core.config import DEFAULT_GROQ_REPORT_MODEL, settings
+from app.core.config import settings
 from app.services.category_service import ALLOWED_FRUITS
 
 LOGGER = logging.getLogger(__name__)
@@ -66,39 +68,40 @@ def analyze_transcript(transcript: str, supported_types: list[str]) -> Finding:
     if not cleaned:
         return _unknown_finding("")
     try:
-        finding = _analyze_with_groq(cleaned, supported_types)
-    except (ReportAIError, ValidationError, ValueError, TypeError, groq.APIError):
+        finding = _analyze_with_gemini(cleaned, supported_types)
+    except (ReportAIError, ValidationError, ValueError, TypeError, genai.errors.APIError):
         LOGGER.warning("Voice transcript analysis failed; using keyword fallback.")
         finding = _analyze_with_keywords(cleaned, supported_types)
     # Voice notes have no coordinates.
     return finding.model_copy(update={"bbox": None})
 
 
-def _analyze_with_groq(transcript: str, supported_types: list[str]) -> Finding:
-    """Ask the configured Groq chat model for validated structured findings."""
-    key = settings.groq_api_key.get_secret_value()
-    if not key:
-        raise ReportAIError("GROQ_API_KEY is not configured for voice analysis.")
-    client = get_groq_client(settings.groq_api_key)
-    model = settings.groq_report_model or DEFAULT_GROQ_REPORT_MODEL
+def _analyze_with_gemini(transcript: str, supported_types: list[str]) -> Finding:
+    """Ask the configured Gemini model for validated structured findings."""
+    if not settings.gemini_api_key.get_secret_value():
+        raise ReportAIError("GEMINI_API_KEY is not configured for voice analysis.")
+    model = settings.gemini_report_model
     LOGGER.info("Voice transcript analysis using model %s.", model)
-    response = client.chat.completions.create(
-        model=model,
+    client = get_gemini_client(settings.gemini_api_key)
+    config = types.GenerateContentConfig(
+        system_instruction=ANALYSIS_SYSTEM_PROMPT,
+        response_mime_type="application/json",
+        response_schema=FINDING_SCHEMA,
         temperature=0,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": json.dumps(
+    )
+    contents = types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                text=json.dumps(
                     {"transcript": transcript, "active_categories": supported_types},
                     ensure_ascii=False,
-                ),
-            },
+                )
+            )
         ],
     )
-    content = response.choices[0].message.content or ""
-    return Finding.model_validate_json(content)
+    response = client.models.generate_content(model=model, contents=contents, config=config)
+    return Finding.model_validate_json(response.text or "")
 
 
 def _unknown_finding(observation: str) -> Finding:

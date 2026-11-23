@@ -15,10 +15,12 @@ from app.ai.schemas import (
     Condition,
     DefectType,
     Finding,
+    InspectionReportText,
     InspectionResult,
     ProduceType,
     ReportUserType,
     Severity,
+    VoiceNoteRelation,
 )
 from app.api import routes_inspection
 from app.core.config import settings
@@ -669,3 +671,102 @@ def test_generate_report_rejects_inspection_without_saved_source() -> None:
     )
     assert response.status_code == 409
     assert "original photo is unavailable" in response.json()["detail"]
+
+
+def _review_inspection(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Save one photo inspection and return its ID for review-route tests."""
+    finding = Finding(
+        produce_type=ProduceType.APPLE,
+        item_is_fruit=True,
+        condition=Condition.FRESH,
+        confidence=0.9,
+        defect_types=[DefectType.BRUISE],
+        severity=Severity.LOW,
+        bbox=(0.2, 0.2, 0.8, 0.8),
+    )
+    _patch_detector(monkeypatch, lambda _: finding)
+    response = client.post("/inspections/product", files={"image": ("apple.jpg", _jpeg_bytes())})
+    assert response.status_code == 200
+    return response.json()["inspection_id"]
+
+
+def _review_report_text() -> InspectionReportText:
+    """Build a valid report narrative for review-route tests."""
+    return InspectionReportText(
+        summary="A fresh apple with a small bruise.",
+        findings=["A small bruise is visible on the skin."],
+        recommendations=["Sell soon."],
+        voice_note_relation=VoiceNoteRelation.NOT_PROVIDED,
+    )
+
+
+def test_inspection_detail_route_returns_full_result_and_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return every stored field needed to review a past inspection in the UI."""
+    inspection_id = _review_inspection(monkeypatch)
+    repository = InspectionRepository(settings.inspection_db_path)
+    repository.save_report(
+        inspection_id,
+        "report-1",
+        ReportUserType.FARMER,
+        "",
+        _review_report_text().model_dump_json(),
+    )
+
+    response = client.get(f"/inspections/history/{inspection_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["inspection_id"] == inspection_id
+    assert body["created_at"]
+    result = body["result"]
+    assert result["grade"] == "B"
+    assert result["verdict"] == "defect"
+    assert result["confidence"] == 0.9
+    assert result["bbox"] == [0.2, 0.2, 0.8, 0.8]
+    assert result["defect_types"] == ["bruise"]
+    assert result["severity"] == "low"
+    assert result["verdict_notes"]
+    assert result["recommended_action"]
+    report = body["report"]
+    assert report["report_id"] == "report-1"
+    assert report["user_type"] == "farmer"
+    assert report["report_text"]["summary"] == "A fresh apple with a small bruise."
+    assert report["report_text"]["findings"] == ["A small bruise is visible on the skin."]
+    assert report["report_text"]["recommendations"] == ["Sell soon."]
+
+
+def test_inspection_detail_route_returns_result_without_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return the result even when no report has been generated yet."""
+    inspection_id = _review_inspection(monkeypatch)
+
+    response = client.get(f"/inspections/history/{inspection_id}")
+
+    assert response.status_code == 200
+    assert response.json()["result"]["inspection_id"] == inspection_id
+    assert response.json()["report"] is None
+
+
+def test_inspection_detail_route_ignores_unreadable_report_narrative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Show the result when a stored report narrative cannot be parsed."""
+    inspection_id = _review_inspection(monkeypatch)
+    repository = InspectionRepository(settings.inspection_db_path)
+    repository.save_report(inspection_id, "report-1", ReportUserType.FARMER, "", "{}")
+
+    response = client.get(f"/inspections/history/{inspection_id}")
+
+    assert response.status_code == 200
+    assert response.json()["result"]["inspection_id"] == inspection_id
+    assert response.json()["report"] is None
+
+
+def test_inspection_detail_route_returns_404_for_unknown() -> None:
+    """Return not found when reviewing an inspection that does not exist."""
+    response = client.get("/inspections/history/00000000-0000-0000-0000-000000000000")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Inspection not found."

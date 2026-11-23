@@ -9,14 +9,9 @@ from google.genai import errors
 from PIL import Image
 from pydantic import SecretStr
 
-from app.ai.client_factory import get_gemini_transcription_client, get_groq_client
-from app.ai.produce_gemini import (
-    FINDING_SCHEMA,
-    LOCALIZATION_SCHEMA,
-    GeminiVisionDetector,
-    _is_quota_exhausted,
-)
-from app.ai.produce_groq import GroqVisionDetector
+from app.ai.client_factory import get_gemini_transcription_client
+from app.ai.gemini_errors import is_quota_exhausted
+from app.ai.produce_gemini import FINDING_SCHEMA, LOCALIZATION_SCHEMA, GeminiVisionDetector
 from app.ai.prompts import SYSTEM_PROMPT, get_localization_prompt, get_system_prompt
 from app.ai.provider_factory import create_vision_detector
 from app.ai.providers import DetectionError, QuotaExhaustedError
@@ -45,17 +40,10 @@ def test_prompts_request_coordinates_in_analysis_and_localization() -> None:
     assert '"bbox": [x1, y1, x2, y2]' in localization
 
 
-def test_factory_selects_groq_from_configuration() -> None:
-    """Select Groq when the provider setting is groq."""
-    config = Settings.model_validate({"vision_provider": "groq"})
-    assert isinstance(create_vision_detector(config), GroqVisionDetector)
-
-
-def test_factory_selects_gemini_from_configuration() -> None:
-    """Select Gemini with separate analysis and localization models."""
+def test_factory_builds_gemini_detector_from_configuration() -> None:
+    """The factory always builds Gemini with separate analysis and localization models."""
     config = Settings.model_validate(
         {
-            "vision_provider": "gemini",
             "gemini_api_key": "test-key",
             "gemini_vision_model": "gemini-4-hydrogen",
             "gemini_localization_model": "gemini-3.5-flash-lite",
@@ -65,41 +53,6 @@ def test_factory_selects_gemini_from_configuration() -> None:
     assert isinstance(detector, GeminiVisionDetector)
     assert detector.vision_model == "gemini-4-hydrogen"
     assert detector.localization_model == "gemini-3.5-flash-lite"
-
-
-def test_groq_without_api_key_fails_clearly() -> None:
-    """Reject missing Groq credentials before attempting an API request."""
-    detector = GroqVisionDetector(SecretStr(""), "vision-test")
-    with pytest.raises(DetectionError, match="GROQ_API_KEY is not configured"):
-        detector(_image())
-
-
-def test_groq_passes_configured_key_and_parses_finding(caplog: pytest.LogCaptureFixture) -> None:
-    """Pass the configured secret explicitly to Groq and parse its response."""
-    caplog.set_level(logging.INFO)
-    finding = {
-        "produce_type": "tomato",
-        "condition": "fresh",
-        "confidence": 0.9,
-    }
-    response = Mock()
-    response.choices = [Mock(message=Mock(content=json.dumps(finding)))]
-    client = Mock()
-    client.chat.completions.create.return_value = response
-    detector = GroqVisionDetector(SecretStr("test-key"), "vision-test")
-    with patch("app.ai.client_factory.Groq", return_value=client) as groq_client:
-        result = detector(_image())
-    groq_client.assert_called_once_with(
-        api_key="test-key",
-        timeout=settings.groq_timeout_seconds,
-        max_retries=1,
-    )
-    assert "Groq vision analysis using model vision-test" in caplog.text
-    request_payload = client.chat.completions.create.call_args.kwargs
-    image_url = request_payload["messages"][1]["content"][1]["image_url"]["url"]
-    assert request_payload["model"] == "vision-test"
-    assert image_url.startswith("data:image/jpeg;base64,")
-    assert result.produce_type == "tomato"
 
 
 def test_gemini_without_api_key_fails_clearly() -> None:
@@ -221,7 +174,7 @@ def _quota_error() -> errors.ClientError:
 
 def test_quota_exhaustion_is_detected() -> None:
     """Only long, daily-quota 429s count as exhausted quota."""
-    assert _is_quota_exhausted(_quota_error())
+    assert is_quota_exhausted(_quota_error())
     short_limit = errors.ClientError(
         429,
         {
@@ -233,8 +186,8 @@ def test_quota_exhaustion_is_detected() -> None:
             }
         },
     )
-    assert not _is_quota_exhausted(short_limit)
-    assert not _is_quota_exhausted(errors.ClientError(400, {"error": {"status": "BAD_REQUEST"}}))
+    assert not is_quota_exhausted(short_limit)
+    assert not is_quota_exhausted(errors.ClientError(400, {"error": {"status": "BAD_REQUEST"}}))
 
 
 def test_gemini_quota_error_skips_all_fallback_models(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -300,19 +253,6 @@ def test_gemini_fallback_attempts_are_capped(monkeypatch: pytest.MonkeyPatch) ->
     ]
 
 
-def test_groq_clients_are_reused_with_bounded_timeout() -> None:
-    """Share one time-bounded Groq client across calls instead of rebuilding it."""
-    with patch("app.ai.client_factory.Groq") as factory:
-        first = get_groq_client(SecretStr("shared-key"))
-        second = get_groq_client(SecretStr("shared-key"))
-    assert first is second
-    factory.assert_called_once_with(
-        api_key="shared-key",
-        timeout=settings.groq_timeout_seconds,
-        max_retries=1,
-    )
-
-
 def test_gemini_transcription_client_is_cached_with_v1beta() -> None:
     """Share one bounded v1beta client for all voice-note transcription."""
     with patch("app.ai.client_factory.genai.Client") as factory:
@@ -352,20 +292,6 @@ def _defective_finding() -> Finding:
         defect_types=[DefectType.BRUISE],
         visual_observation="A dark sunken patch is visible.",
     )
-
-
-def test_groq_locate_defect_returns_parsed_bbox() -> None:
-    """Parse the second-stage Groq response into normalized coordinates."""
-    response = Mock()
-    response.choices = [Mock(message=Mock(content='{"bbox": [0.1, 0.2, 0.5, 0.6]}'))]
-    client = Mock()
-    client.chat.completions.create.return_value = response
-    detector = GroqVisionDetector(SecretStr("test-key"), "vision-test")
-    with patch("app.ai.client_factory.Groq", return_value=client):
-        bbox = detector.locate_defect(_image(), _defective_finding())
-    assert bbox == (0.1, 0.2, 0.5, 0.6)
-    user_text = client.chat.completions.create.call_args.kwargs["messages"][1]["content"][0]["text"]
-    assert "locate" in user_text.lower()
 
 
 def test_localization_ignores_malformed_bbox() -> None:

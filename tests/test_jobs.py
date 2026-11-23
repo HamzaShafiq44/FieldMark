@@ -208,7 +208,7 @@ def test_uploaded_file_is_removed_after_processing(monkeypatch: pytest.MonkeyPat
 
 def test_quota_error_is_surfaced_to_the_user() -> None:
     """The job error carries the actionable quota message."""
-    message = "Gemini daily quota exhausted. Enable billing or set VISION_PROVIDER=groq."
+    message = "Gemini daily quota exhausted. Enable billing or use a different API key."
     assert job_service._safe_error(QuotaExhaustedError(message)) == message
 
 

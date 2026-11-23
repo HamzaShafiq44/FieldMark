@@ -49,35 +49,29 @@ def test_keyword_fallback_marks_out_of_category_fruit_as_unknown() -> None:
     assert finding.condition is Condition.FRESH
 
 
-def test_groq_analysis_returns_validated_finding(
+def test_gemini_analysis_returns_validated_finding(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Valid model JSON is accepted and coordinates are discarded for voice notes."""
     caplog.set_level(logging.INFO)
-    monkeypatch.setattr(settings, "groq_api_key", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "gemini_api_key", SecretStr("test-key"))
     client = Mock()
-    client.chat.completions.create.return_value = Mock(
-        choices=[
-            Mock(
-                message=Mock(
-                    content=json.dumps(
-                        {
-                            "produce_type": "apple",
-                            "detected_item": "Apple",
-                            "item_is_fruit": True,
-                            "condition": "rotten",
-                            "confidence": 0.9,
-                            "visual_observation": "The apple is rotten.",
-                            "defect_types": ["rot"],
-                            "severity": "high",
-                            "bbox": [0.1, 0.1, 0.9, 0.9],
-                        }
-                    )
-                )
-            )
-        ]
+    client.models.generate_content.return_value = Mock(
+        text=json.dumps(
+            {
+                "produce_type": "apple",
+                "detected_item": "Apple",
+                "item_is_fruit": True,
+                "condition": "rotten",
+                "confidence": 0.9,
+                "visual_observation": "The apple is rotten.",
+                "defect_types": ["rot"],
+                "severity": "high",
+                "bbox": [0.1, 0.1, 0.9, 0.9],
+            }
+        )
     )
-    with patch("app.ai.client_factory.Groq", return_value=client):
+    with patch("app.ai.client_factory.genai.Client", return_value=client):
         finding = voice_analysis.analyze_transcript("The apple is rotten.", ["apple"])
     assert finding.produce_type == "apple"
     assert finding.condition is Condition.ROTTEN
@@ -87,12 +81,10 @@ def test_groq_analysis_returns_validated_finding(
 
 def test_invalid_model_output_uses_keyword_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unusable provider output never loses the inspection."""
-    monkeypatch.setattr(settings, "groq_api_key", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "gemini_api_key", SecretStr("test-key"))
     client = Mock()
-    client.chat.completions.create.return_value = Mock(
-        choices=[Mock(message=Mock(content="not json"))]
-    )
-    with patch("app.ai.client_factory.Groq", return_value=client):
+    client.models.generate_content.return_value = Mock(text="not json")
+    with patch("app.ai.client_factory.genai.Client", return_value=client):
         finding = voice_analysis.analyze_transcript("My apple is rotten.", ["apple"])
     assert finding.produce_type == "apple"
     assert finding.condition is Condition.ROTTEN

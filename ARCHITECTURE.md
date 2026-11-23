@@ -129,6 +129,10 @@ hosted-model round trips.
 - **Inspection history**: a reverse-chronological, paginated list with thumbnail, date, produce
   type, verdict, grade, transcript, and report availability, plus thumbnail/original/annotated
   image endpoints and a clear-history action that removes rows and images.
+- **Inspection review**: clicking a history entry opens a read-only overlay that replays everything
+  in the PDF — full result (grade, verdict, confidence, defects, severity, notes, action), original
+  and annotated photos, transcript, and the stored written report narrative — so a past inspection
+  can be reviewed without re-downloading the PDF. The overlay also keeps the PDF download action.
 - **Category management**: list, create, rename, enable, disable, and delete products with an
   optional emoji; four seeded defaults; guards that keep at least one category active and prevent
   deleting a category referenced by saved inspections.
@@ -142,7 +146,7 @@ hosted-model round trips.
   and input size/format limits.
 - **Single-command Docker deployment** with a backend healthcheck and a persistent history volume.
 - **Interactive API docs** at `/docs` and a `/health` endpoint.
-- **Automated checks**: 143 tests with mocked AI clients, a coverage report, and lint/format/type
+- **Automated checks**: 148 tests with mocked AI clients, a coverage report, and lint/format/type
   gates (see §15).
 
 ## 4. System context
@@ -202,7 +206,8 @@ uses Gemini 3.5 Transcribe, regardless of the selected vision provider.
 | `frontend/src/context/InspectionJobsContext.tsx` | Provider above the router: submits jobs, polls status, toasts, last completed result |
 | `frontend/src/context/useInspectionJobs.ts` | Hook used by pages to read the job manager |
 | `frontend/src/App.tsx` | App shell, navigation, theme, API status, routes, global progress indicator and toasts |
-| `frontend/src/pages/InspectPage.tsx` | Upload/camera, result panel, report download, history, clear |
+| `frontend/src/pages/InspectPage.tsx` | Upload/camera, result panel, report download, history, clear, review launcher |
+| `frontend/src/components/ReviewDrawer.tsx` | Read-only review overlay: full result, evidence photos, transcript, and report narrative |
 | `frontend/src/pages/CategoriesPage.tsx` | Category list, add/rename/enable/disable/delete |
 
 ## 6. Data flow
@@ -289,8 +294,11 @@ and the rebuilt PDF is returned as a download. The web UI does not expose this u
 ### 6.3 History and clearing
 
 `GET /inspections/history` returns reverse-chronological summaries with `report_available` and
-`report_source_available` flags. `DELETE /inspections/history` deletes database rows and removes
-the `images/` and `reports/` directories. `GET .../thumbnail` streams the 192×192 JPEG preview.
+`report_source_available` flags. `GET /inspections/history/{id}` returns the full stored
+`InspectionResult` plus the optional report narrative for the review overlay; a corrupt report
+narrative is treated as unavailable rather than failing the whole response.
+`DELETE /inspections/history` deletes database rows and removes the `images/` and `reports/`
+directories. `GET .../thumbnail` streams the 192×192 JPEG preview.
 
 ### 6.4 Background inspection jobs
 
@@ -389,6 +397,7 @@ directories along with the database rows. Images are never stored as BLOBs in SQ
 | GET | `/inspections/jobs` | 200 list of recent jobs | — | — |
 | GET | `/inspections/jobs/{id}` | 200 `InspectionJob` | 404 | — |
 | GET | `/inspections/history?limit&offset` | 200 page (limit 1–100, default 20) | 422 invalid query | 500 |
+| GET | `/inspections/history/{id}` | 200 `InspectionDetail` (result + optional report) | 404 | 500 |
 | DELETE | `/inspections/history` | 204 | — | 500 |
 | GET | `/inspections/history/{id}/thumbnail` | 200 JPEG | 404 | 500 |
 | POST | `/inspections/{id}/report` | 200 PDF attachment | 400 invalid audio / transcript too long, 413 audio too large, 409 no source photo | 500 storage/render, 502 AI |
@@ -540,7 +549,7 @@ fallback for routes such as `/categories`. CORS middleware in FastAPI allows the
 
 ## 15. Testing
 
-`uv run pytest --cov=app --cov-report=term-missing` — 143 tests, 87% line coverage.
+`uv run pytest --cov=app --cov-report=term-missing` — 148 tests, 87% line coverage.
 
 - `tests/test_api.py` — route behavior, status-code mapping, pagination, oversized/invalid
   uploads, report routes, an end-to-end happy path through the API with a mocked detector.
@@ -563,7 +572,7 @@ network-free; no test calls a live provider.
 
 - The bounding box is returned by the API, drawn by the backend into a saved annotated JPEG, and
   rendered in the PDF. The result panel shows that image when coordinates are available, but does
-  not yet display the confidence score.
+  not yet display the confidence score; the saved-inspection review overlay does show it.
 - A photo inspection's PDF is generated after the response is sent, so the first response reports
   `report_available=false`; the download button appears once the UI's short history poll sees the
   saved report. Closing the page early does not cancel the background work.

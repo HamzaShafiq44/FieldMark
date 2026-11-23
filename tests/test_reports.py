@@ -4,19 +4,21 @@ import json
 import logging
 import re
 import sqlite3
-from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import groq
 import pytest
-from httpx import Request, Response
+from google.genai import errors
 from PIL import Image
 from pydantic import SecretStr, ValidationError
 
-from app.ai import groq_report
-from app.ai.groq_report import MODEL_UNAVAILABLE_MESSAGE, RATE_LIMITED_MESSAGE, _provider_failure
+from app.ai import gemini_report
+from app.ai.gemini_errors import (
+    MODEL_UNAVAILABLE_MESSAGE,
+    RATE_LIMITED_MESSAGE,
+    describe_api_error,
+)
 from app.ai.schemas import (
     Condition,
     DefectType,
@@ -316,35 +318,28 @@ def test_report_text_rejects_fields_outside_its_schema() -> None:
         )
 
 
-def test_groq_report_writer_passes_context_and_validates_output(
+def test_gemini_report_writer_passes_context_and_validates_output(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Use GPT OSS by default without changing the configured vision model."""
+    """Use the configured Gemini report model and validate its structured output."""
     caplog.set_level(logging.INFO)
-    monkeypatch.setattr(settings, "groq_api_key", SecretStr("report-test-key"))
-    monkeypatch.setattr(settings, "groq_report_model", "")
-    monkeypatch.setattr(settings, "groq_vision_model", "qwen/qwen3.8-27b")
-    response = Mock()
-    response.choices = [
-        Mock(
-            message=Mock(
-                content=json.dumps(
-                    {
-                        "summary": "The photo suggests a possible bruise.",
-                        "findings": ["A bruise was reported in the image."],
-                        "recommendations": ["Re-inspect the affected area."],
-                        "voice_note_relation": "adds_context",
-                        "voice_note_conflict": "",
-                    }
-                )
-            )
-        )
-    ]
+    monkeypatch.setattr(settings, "gemini_api_key", SecretStr("report-test-key"))
+    monkeypatch.setattr(settings, "gemini_report_model", "gemini-3.5-flash-lite")
     client = Mock()
-    client.chat.completions.create.return_value = response
-    with patch("app.ai.client_factory.Groq", return_value=client) as groq_client:
-        report = groq_report.write_inspection_report(
+    client.models.generate_content.return_value = Mock(
+        text=json.dumps(
+            {
+                "summary": "The photo suggests a possible bruise.",
+                "findings": ["A bruise was reported in the image."],
+                "recommendations": ["Re-inspect the affected area."],
+                "voice_note_relation": "adds_context",
+                "voice_note_conflict": "",
+            }
+        )
+    )
+    with patch("app.ai.client_factory.genai.Client", return_value=client):
+        report = gemini_report.write_inspection_report(
             inspection_service.inspect_produce(
                 _jpeg_bytes(),
                 detect=lambda _: Finding(
@@ -357,15 +352,10 @@ def test_groq_report_writer_passes_context_and_validates_output(
             "I noticed a soft spot.",
         )
 
-    groq_client.assert_called_once_with(
-        api_key="report-test-key",
-        timeout=settings.groq_timeout_seconds,
-        max_retries=1,
-    )
-    request = client.chat.completions.create.call_args.kwargs
-    context = json.loads(request["messages"][1]["content"])
-    assert request["model"] == "openai/gpt-oss-20b"
-    assert "Report writing using model openai/gpt-oss-20b" in caplog.text
+    request = client.models.generate_content.call_args.kwargs
+    context = json.loads(request["contents"].parts[0].text)
+    assert request["model"] == "gemini-3.5-flash-lite"
+    assert "Report writing using model gemini-3.5-flash-lite" in caplog.text
     assert context["user_type"] == "farmer"
     assert "everyday, practical language" in context["farmer_audience_guidance"]
     assert context["voice_note_transcript"] == "I noticed a soft spot."
@@ -382,42 +372,42 @@ def test_report_request_instructs_plain_farmer_friendly_language() -> None:
             confidence=0.8,
         ),
     )
-    farmer = json.loads(groq_report._report_request(result, ReportUserType.FARMER, ""))
+    farmer = json.loads(gemini_report._report_request(result, ReportUserType.FARMER, ""))
 
     assert farmer["user_type"] == "farmer"
     assert "everyday, practical language" in farmer["farmer_audience_guidance"]
 
 
 @pytest.mark.parametrize(
-    ("error_factory", "message"),
+    ("error", "message"),
     [
         (
-            lambda: groq.NotFoundError(
-                "provider details stay private",
-                response=Response(404, request=Request("POST", "https://api.groq.com")),
-                body=None,
-            ),
+            errors.ClientError(404, {"error": {"message": "provider details stay private"}}),
             MODEL_UNAVAILABLE_MESSAGE,
         ),
         (
-            lambda: groq.RateLimitError(
-                "provider details stay private",
-                response=Response(429, request=Request("POST", "https://api.groq.com")),
-                body=None,
+            errors.ClientError(
+                429,
+                {
+                    "error": {
+                        "message": "provider details stay private",
+                        "status": "RESOURCE_EXHAUSTED",
+                    }
+                },
             ),
             RATE_LIMITED_MESSAGE,
         ),
     ],
 )
-def test_groq_report_errors_are_actionable(
-    error_factory: Callable[[], groq.APIError],
+def test_gemini_report_errors_are_actionable(
+    error: errors.APIError,
     message: str,
 ) -> None:
     """Translate common provider errors without exposing response details."""
-    translated = _provider_failure(error_factory(), "Report writing")
+    translated = describe_api_error(error, "Report writing")
 
-    assert str(translated) == message
-    assert "provider details" not in str(translated)
+    assert translated == message
+    assert "provider details" not in translated
 
 
 def test_legacy_history_migrates_without_fabricating_source_images(tmp_path: Path) -> None:
@@ -568,7 +558,7 @@ def test_automatic_report_falls_back_when_ai_writing_fails(
     )
 
     def fail_report(*_: object) -> InspectionReportText:
-        raise groq_report.ReportAIError("rate limited")
+        raise gemini_report.ReportAIError("rate limited")
 
     monkeypatch.setattr(report_service, "write_inspection_report", fail_report)
     result = inspection_service.inspect_produce(
@@ -610,26 +600,20 @@ def test_voice_only_report_renders_and_rebuilds_without_photo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A voice-only inspection gets a downloadable, rebuildable one-page PDF."""
-    monkeypatch.setattr(settings, "groq_api_key", SecretStr("report-test-key"))
-    monkeypatch.setattr(settings, "groq_report_model", "")
-    response = Mock()
-    response.choices = [
-        Mock(
-            message=Mock(
-                content=json.dumps(
-                    {
-                        "summary": "The speaker reported a rotten apple.",
-                        "findings": ["A rotten apple was described."],
-                        "recommendations": ["Separate the apple from the batch."],
-                        "voice_note_relation": "supports",
-                        "voice_note_conflict": "",
-                    }
-                )
-            )
-        )
-    ]
+    monkeypatch.setattr(settings, "gemini_api_key", SecretStr("report-test-key"))
+    monkeypatch.setattr(settings, "gemini_report_model", "gemini-3.5-flash-lite")
     client = Mock()
-    client.chat.completions.create.return_value = response
+    client.models.generate_content.return_value = Mock(
+        text=json.dumps(
+            {
+                "summary": "The speaker reported a rotten apple.",
+                "findings": ["A rotten apple was described."],
+                "recommendations": ["Separate the apple from the batch."],
+                "voice_note_relation": "supports",
+                "voice_note_conflict": "",
+            }
+        )
+    )
     spoken_finding = Finding(
         produce_type=ProduceType.APPLE,
         detected_item="Apple",
@@ -646,7 +630,7 @@ def test_voice_only_report_renders_and_rebuilds_without_photo(
     ):
         result = inspection_service.inspect_from_voice(b"audio", "note.m4a")
 
-    with patch("app.ai.client_factory.Groq", return_value=client):
+    with patch("app.ai.client_factory.genai.Client", return_value=client):
         pdf = report_service.generate_inspection_report(result.inspection_id, ReportUserType.FARMER)
     assert pdf.startswith(b"%PDF")
     rebuilt = report_service.get_inspection_report(result.inspection_id)

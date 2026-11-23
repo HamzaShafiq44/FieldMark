@@ -230,3 +230,22 @@ class InspectionReportText(BaseModel):
         if self.voice_note_relation is not VoiceNoteRelation.CONFLICTS and self.voice_note_conflict:
             raise ValueError("A voice-note conflict explanation requires a conflict relation.")
         return self
+
+
+class InspectionReportDetail(BaseModel):
+    """Persisted report narrative and metadata shown in the review view."""
+
+    report_id: str
+    created_at: str
+    user_type: str
+    transcript: str
+    report_text: InspectionReportText
+
+
+class InspectionDetail(BaseModel):
+    """Full stored result and optional report for reviewing a past inspection."""
+
+    inspection_id: str
+    created_at: str
+    result: InspectionResult
+    report: InspectionReportDetail | None = None

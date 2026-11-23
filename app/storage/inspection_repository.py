@@ -13,7 +13,14 @@ from pathlib import Path
 from PIL import Image
 from pydantic import ValidationError
 
-from app.ai.schemas import InspectionHistoryItem, InspectionResult, ReportUserType
+from app.ai.schemas import (
+    InspectionDetail,
+    InspectionHistoryItem,
+    InspectionReportDetail,
+    InspectionReportText,
+    InspectionResult,
+    ReportUserType,
+)
 
 LOGGER = logging.getLogger(__name__)
 THUMBNAIL_SIZE = (192, 192)
@@ -78,6 +85,7 @@ SELECT created_at, original_image_path, result_json
 FROM inspections
 WHERE inspection_id = ?
 """
+SELECT_INSPECTION_DETAIL = "SELECT created_at, result_json FROM inspections WHERE inspection_id = ?"
 CREATE_REPORTS_TABLE = """
 CREATE TABLE IF NOT EXISTS inspection_reports (
     inspection_id TEXT PRIMARY KEY,
@@ -359,6 +367,47 @@ class InspectionRepository:
         except (OSError, sqlite3.Error) as exc:
             LOGGER.error("Inspection report read failed (%s).", type(exc).__name__)
             raise HistoryStorageError("Inspection report could not be loaded.") from exc
+
+    def get_detail(self, inspection_id: str) -> InspectionDetail | None:
+        """Return the full stored result and report narrative for one inspection.
+
+        A report with an unreadable narrative is treated as unavailable so the
+        review view can still show the inspection result.
+        """
+        try:
+            with self._connection() as connection:
+                row = connection.execute(SELECT_INSPECTION_DETAIL, (inspection_id,)).fetchone()
+                if row is None:
+                    return None
+                report_row = connection.execute(SELECT_REPORT_DATA, (inspection_id,)).fetchone()
+            result = _stored_result(_row_text(row, "result_json"))
+            if result is None:
+                return None
+            report: InspectionReportDetail | None = None
+            if report_row is not None:
+                try:
+                    report_text = InspectionReportText.model_validate_json(
+                        str(report_row["report_text_json"])
+                    )
+                except ValidationError:
+                    LOGGER.warning("Ignoring an unreadable stored inspection report narrative.")
+                else:
+                    report = InspectionReportDetail(
+                        report_id=str(report_row["report_id"]),
+                        created_at=str(report_row["created_at"]),
+                        user_type=str(report_row["user_type"]),
+                        transcript=str(report_row["transcript"]),
+                        report_text=report_text,
+                    )
+            return InspectionDetail(
+                inspection_id=inspection_id,
+                created_at=str(row["created_at"]),
+                result=result,
+                report=report,
+            )
+        except (OSError, sqlite3.Error) as exc:
+            LOGGER.error("Inspection detail read failed (%s).", type(exc).__name__)
+            raise HistoryStorageError("Inspection detail could not be loaded.") from exc
 
     def clear_history(self) -> None:
         """Delete all saved inspection records, images, and generated reports."""

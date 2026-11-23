@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 
 from app.ai.schemas import (
+    InspectionDetail,
     InspectionHistoryResponse,
     InspectionJob,
     InspectionResult,
@@ -30,6 +31,7 @@ from app.services.inspection_service import (
     clear_inspection_history,
     finalize_inspection,
     get_inspection_annotated,
+    get_inspection_detail,
     get_inspection_original,
     get_inspection_thumbnail,
     inspect_from_voice,
@@ -55,6 +57,7 @@ THUMBNAIL_NOT_FOUND = "Inspection thumbnail not found."
 ORIGINAL_NOT_FOUND = "Inspection photo not found."
 ANNOTATED_NOT_FOUND = "No annotated photo is available for this inspection."
 REPORT_NOT_FOUND = "Inspection report not found."
+INSPECTION_NOT_FOUND = "Inspection not found."
 VOICE_NOTE_TOO_LARGE = "Voice note exceeds the maximum allowed size."
 INVALID_VOICE_NOTE = "Choose a supported audio file for the optional voice note."
 VOICE_NOTE_SUFFIXES = frozenset(
@@ -226,6 +229,21 @@ async def inspection_history_route(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Inspection history could not be loaded.",
         ) from exc
+
+
+@router.get("/history/{inspection_id}", response_model=InspectionDetail)
+async def inspection_detail_route(inspection_id: UUID) -> InspectionDetail:
+    """Return the full stored result and report narrative for one past inspection."""
+    try:
+        detail = await run_in_threadpool(get_inspection_detail, str(inspection_id))
+    except InspectionStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Inspection details could not be loaded.",
+        ) from exc
+    if detail is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=INSPECTION_NOT_FOUND)
+    return detail
 
 
 @router.delete("/history", status_code=status.HTTP_204_NO_CONTENT)

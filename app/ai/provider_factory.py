@@ -1,7 +1,6 @@
-"""Create a vision detector from application configuration."""
+"""Create the Gemini vision detector used by the inspection pipeline."""
 
 from app.ai.produce_gemini import GeminiVisionDetector
-from app.ai.produce_groq import GroqVisionDetector
 from app.ai.providers import VisionDetector
 from app.core.config import Settings, settings
 
@@ -10,30 +9,20 @@ def create_vision_detector(
     config: Settings | None = None,
     supported_types: list[str] | None = None,
 ) -> VisionDetector:
-    """Build the configured provider without performing network requests.
+    """Build the configured Gemini detector without performing network requests.
 
     Args:
         config: Application settings. If None, uses default settings.
         supported_types: Product types supported by the inspection pipeline.
-            If None, uses the default tomato, apple, banana, and orange list.
+            If None, the detector uses the default category list.
     """
-    selected_settings = config if config is not None else settings
-    if selected_settings.vision_provider == "groq":
-        return GroqVisionDetector(
-            selected_settings.groq_api_key,
-            selected_settings.groq_vision_model,
-            supported_types=supported_types,
-        )
-    if selected_settings.vision_provider == "gemini":
-        return GeminiVisionDetector(
-            selected_settings.gemini_api_key,
-            selected_settings.gemini_vision_model,
-            localization_model=selected_settings.gemini_localization_model,
-            fallback_models=[
-                item.strip()
-                for item in selected_settings.gemini_fallback_models.split(",")
-                if item.strip()
-            ],
-            supported_types=supported_types,
-        )
-    raise ValueError(f"Unsupported vision provider: {selected_settings.vision_provider}")
+    selected = config if config is not None else settings
+    return GeminiVisionDetector(
+        selected.gemini_api_key,
+        selected.gemini_vision_model,
+        localization_model=selected.gemini_localization_model,
+        fallback_models=[
+            item.strip() for item in selected.gemini_fallback_models.split(",") if item.strip()
+        ],
+        supported_types=supported_types,
+    )

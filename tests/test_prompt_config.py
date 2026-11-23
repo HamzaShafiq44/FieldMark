@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.ai import prompt_config
-from app.ai.groq_report import FARMER_AUDIENCE_GUIDANCE, REPORT_SYSTEM_PROMPT
+from app.ai.gemini_report import FARMER_AUDIENCE_GUIDANCE, REPORT_SYSTEM_PROMPT
 from app.ai.prompts import DEFAULT_SUPPORTED_TYPES, get_localization_prompt, get_system_prompt
 from app.ai.voice_analysis import ANALYSIS_SYSTEM_PROMPT
 from app.core.config import settings

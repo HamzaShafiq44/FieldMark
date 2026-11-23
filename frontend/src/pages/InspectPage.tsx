@@ -5,6 +5,7 @@ import {
   CircleAlert,
   Clock3,
   Download,
+  Eye,
   ImagePlus,
   LoaderCircle,
   RefreshCw,
@@ -32,6 +33,7 @@ import {
   type InspectionHistoryItem,
   type InspectionResult,
 } from '../services/api'
+import ReviewDrawer from '../components/ReviewDrawer'
 import { useInspectionJobs } from '../context/useInspectionJobs.ts'
 import { listCategories, type ProductCategory } from '../services/categories'
 import { prepareRecording, SILENCE_PEAK_THRESHOLD } from '../utils/audio'
@@ -224,16 +226,14 @@ function formatFileSize(bytes: number): string {
 }
 
 function stageMessage(stage: string | undefined, kind: 'image' | 'voice'): string {
-  if (stage === 'validating') return 'Preparing your upload…'
+  if (stage === 'validating') {
+    return kind === 'voice' ? 'Uploading voice note…' : 'Preparing your photo…'
+  }
   if (stage === 'analyzing') {
-    return kind === 'voice'
-      ? 'Reading what you said and estimating a quality grade…'
-      : 'Checking visible signs and estimating a quality grade…'
+    return kind === 'voice' ? 'Transcribing & grading…' : 'Checking visible signs…'
   }
   if (stage === 'report') return 'Writing your report…'
-  return kind === 'voice'
-    ? 'Reading what you said and estimating a quality grade.'
-    : 'Checking visible signs and estimating a quality grade.'
+  return kind === 'voice' ? 'Processing voice note…' : 'Processing photo…'
 }
 
 function stageProgress(stage: string | undefined): number {
@@ -241,6 +241,27 @@ function stageProgress(stage: string | undefined): number {
   if (stage === 'analyzing') return 55
   if (stage === 'report') return 85
   return 5
+}
+
+function SectionProgress({ stage, kind }: { stage?: string; kind: 'image' | 'voice' }) {
+  const progress = stageProgress(stage)
+  return (
+    <div className="section-progress" role="status" aria-live="polite">
+      <div className="section-progress-label">
+        <LoaderCircle className="spin" size={14} />
+        {stageMessage(stage, kind)}
+      </div>
+      <div
+        className="job-progress-track"
+        role="progressbar"
+        aria-valuenow={progress}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <span style={{ width: `${progress}%` }} />
+      </div>
+    </div>
+  )
 }
 
 function formatInspectionDate(value: string): string {
@@ -266,6 +287,7 @@ interface InspectPageProps {
 function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const {
     jobs,
+    activeJob,
     startImageJob,
     startVoiceJob,
     lastCompleted,
@@ -314,9 +336,13 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const [activeDeviceLabel, setActiveDeviceLabel] = useState<string | null>(null)
   const [reportActionId, setReportActionId] = useState<string | null>(null)
   const [reportError, setReportError] = useState<string | null>(null)
+  // A saved inspection opened in the read-only review overlay.
+  const [reviewId, setReviewId] = useState<string | null>(null)
   // The submit call returns in milliseconds; the UI must keep spinning until
   // the queued job actually finishes, not until the upload request ends.
   const analysisJob = jobs.find((job) => job.status === 'queued' || job.status === 'processing')
+  const imageJob = activeJob?.kind === 'image' ? activeJob : null
+  const voiceJob = activeJob?.kind === 'voice' ? activeJob : null
   const loadingKind = activeInspection ?? analysisJob?.kind ?? null
   const reportPending = jobs.some((job) => job.status === 'completed' && job.stage === 'report')
   // Never show a previous verdict while a new job is still processing.
@@ -330,6 +356,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const activeCategories = categories.filter((category) => category.is_active)
   const heroCategories = activeCategories.slice(0, HERO_CARD_SLOTS.length)
   const visibleHistory = history.filter((item) => matchesHistoryFilter(item, historyFilter))
+  const closeReview = useCallback(() => setReviewId(null), [])
 
   const stopMicMeter = useCallback(() => {
     if (micLevelTimerRef.current) {
@@ -890,6 +917,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
       await clearInspectionHistory()
       setHistory([])
       setResult(null)
+      setReviewId(null)
       if (isRecording) stopRecording()
       setVoiceNoteFile(null)
       updateVoiceAudioUrl(null)
@@ -1042,6 +1070,8 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
               </button>
             </div>
           )}
+
+          {imageJob && <SectionProgress stage={imageJob.stage} kind="image" />}
 
           <div className="supported-row">
             <span>SUPPORTED</span>
@@ -1231,6 +1261,8 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
               {voiceWarning}
             </p>
           )}
+
+          {voiceJob && <SectionProgress stage={voiceJob.stage} kind="voice" />}
 
           <button
             className="inspect-button"
@@ -1615,7 +1647,11 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
               const classification = classifyInspectionResult(item)
               const unsupported = classification === 'unsupported_item'
               return (
-                <article className="history-item" key={item.inspection_id}>
+                <article
+                  className="history-item history-item-review"
+                  key={item.inspection_id}
+                  onClick={() => setReviewId(item.inspection_id)}
+                >
                   {item.voice_note_transcript ? (
                     <span
                       className="history-thumbnail history-voice-thumbnail"
@@ -1648,13 +1684,26 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                         </strong>
                       </>
                     )}
+                    <button
+                      className="history-review-button"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setReviewId(item.inspection_id)
+                      }}
+                    >
+                      <Eye size={14} /> Review
+                    </button>
                     {unsupported ? (
                       <span className="history-unsupported">Unsupported item</span>
                     ) : item.report_available ? (
                       <button
                         className="history-report-button"
                         type="button"
-                        onClick={() => void handleDownloadReport(item.inspection_id)}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void handleDownloadReport(item.inspection_id)
+                        }}
                         disabled={reportActionId !== null}
                       >
                         {reportActionId === item.inspection_id ? (
@@ -1763,6 +1812,15 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
           ))}
         </div>
       </details>
+
+      {reviewId && (
+        <ReviewDrawer
+          key={reviewId}
+          inspectionId={reviewId}
+          categories={categories}
+          onClose={closeReview}
+        />
+      )}
     </>
   )
 }

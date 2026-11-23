@@ -17,6 +17,7 @@ from app.ai.schemas import (
     DefectType,
     Finding,
     Grade,
+    InspectionDetail,
     InspectionHistoryResponse,
     InspectionResult,
     ProduceType,
@@ -519,6 +520,14 @@ def list_inspection_history(limit: int, offset: int) -> InspectionHistoryRespons
     except HistoryStorageError as exc:
         raise InspectionStorageError(str(exc)) from exc
     return InspectionHistoryResponse(items=items)
+
+
+def get_inspection_detail(inspection_id: str) -> InspectionDetail | None:
+    """Return the full stored result and report for reviewing one inspection."""
+    try:
+        return InspectionRepository(settings.inspection_db_path).get_detail(inspection_id)
+    except HistoryStorageError as exc:
+        raise InspectionStorageError(str(exc)) from exc
 
 
 def clear_inspection_history() -> None:

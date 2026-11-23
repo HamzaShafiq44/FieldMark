@@ -59,6 +59,32 @@ export interface InspectionHistoryItem {
   voice_note_transcript?: string
 }
 
+export type VoiceNoteRelation = 'not_provided' | 'supports' | 'adds_context' | 'conflicts'
+
+export interface InspectionReportText {
+  summary: string
+  findings: string[]
+  recommendations: string[]
+  voice_note_relation: VoiceNoteRelation
+  voice_note_conflict: string
+}
+
+export interface InspectionReportDetail {
+  report_id: string
+  created_at: string
+  user_type: string
+  transcript: string
+  report_text: InspectionReportText
+}
+
+/** Full stored result and report narrative used by the inspection review drawer. */
+export interface InspectionDetail {
+  inspection_id: string
+  created_at: string
+  result: InspectionResult
+  report: InspectionReportDetail | null
+}
+
 /** Result classification shown by the interface. */
 export type ResultClassification = 'supported' | 'out_of_categories' | 'unsupported_item'
 
@@ -224,6 +250,14 @@ export async function listInspectionHistory(): Promise<InspectionHistoryItem[]> 
     throw new Error('The API returned an invalid inspection history response.')
   }
   return body.items as InspectionHistoryItem[]
+}
+
+export async function fetchInspectionDetail(inspectionId: string): Promise<InspectionDetail> {
+  const response = await fetch(apiUrl(`/inspections/history/${encodeURIComponent(inspectionId)}`))
+  if (!response.ok) {
+    throw await responseApiError(response, 'Could not load this inspection.')
+  }
+  return (await response.json()) as InspectionDetail
 }
 
 export function inspectionThumbnailUrl(inspectionId: string): string {
