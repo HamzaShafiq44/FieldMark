@@ -44,6 +44,7 @@ class GroqVisionDetector:
 
     def __call__(self, image: Image.Image) -> Finding:
         """Analyze an image and validate the model's structured finding."""
+        LOGGER.info("Groq vision analysis using model %s.", self.model)
         try:
             prompt = get_system_prompt(self.supported_types)
             return Finding.model_validate_json(self._ask_groq(image, prompt))
@@ -53,6 +54,7 @@ class GroqVisionDetector:
 
     def locate_defect(self, image: Image.Image, finding: Finding) -> BBox | None:
         """Locate the reported defect in a dedicated second vision call."""
+        LOGGER.info("Groq defect localization using model %s.", self.model)
         prompt = get_localization_prompt(defect_summary(finding), finding.visual_observation)
         try:
             content = self._ask_groq(image, prompt, LOCALIZATION_TEXT)

@@ -1,6 +1,7 @@
 """Orchestrate voice transcription, validated report writing, and PDF persistence."""
 
 import logging
+import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -151,9 +152,13 @@ def generate_inspection_report(
     else:
         # Voice-only inspections carry their evidence on the stored result.
         transcript = _bound_transcript(source.result.voice_note_transcript or "")
+    started = time.monotonic()
     report_text = _write_report(source.result, user_type, transcript)
+    LOGGER.info("Report writing took %.2fs.", time.monotonic() - started)
     report_id = str(uuid4())
+    started = time.monotonic()
     pdf = _render_report(report_id, source, user_type, report_text, transcript)
+    LOGGER.info("PDF rendering took %.2fs.", time.monotonic() - started)
     _save_report(repository, inspection_id, report_id, user_type, transcript, report_text)
     return pdf
 

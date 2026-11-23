@@ -174,6 +174,37 @@ class InspectionHistoryResponse(BaseModel):
     items: list[InspectionHistoryItem]
 
 
+class JobStatus(StrEnum):
+    """Lifecycle state of an asynchronous inspection job."""
+
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class JobKind(StrEnum):
+    """Evidence type submitted for an asynchronous inspection job."""
+
+    IMAGE = "image"
+    VOICE = "voice"
+
+
+class InspectionJob(BaseModel):
+    """Status and result of a background inspection job."""
+
+    job_id: str
+    kind: JobKind
+    status: JobStatus
+    stage: str = ""
+    created_at: str
+    inspection_id: str | None = None
+    result: InspectionResult | None = None
+    error: str | None = None
+    filename: str = ""
+    report_ready: bool = False
+
+
 class InspectionReportText(BaseModel):
     """Validated narrative returned by the report-writing model."""
 

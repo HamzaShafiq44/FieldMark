@@ -171,6 +171,7 @@ class GeminiVisionDetector:
         ]
         last_error: genai.errors.APIError | None = None
         for index, candidate in enumerate(candidates):
+            LOGGER.info("Gemini request using model %s.", candidate)
             try:
                 response = client.models.generate_content(
                     model=candidate, contents=content, config=config

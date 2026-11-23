@@ -1,6 +1,7 @@
 """Tests for turning spoken inspection notes into structured findings."""
 
 import json
+import logging
 from unittest.mock import Mock, patch
 
 import pytest
@@ -48,8 +49,11 @@ def test_keyword_fallback_marks_out_of_category_fruit_as_unknown() -> None:
     assert finding.condition is Condition.FRESH
 
 
-def test_groq_analysis_returns_validated_finding(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_groq_analysis_returns_validated_finding(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     """Valid model JSON is accepted and coordinates are discarded for voice notes."""
+    caplog.set_level(logging.INFO)
     monkeypatch.setattr(settings, "groq_api_key", SecretStr("test-key"))
     client = Mock()
     client.chat.completions.create.return_value = Mock(
@@ -78,6 +82,7 @@ def test_groq_analysis_returns_validated_finding(monkeypatch: pytest.MonkeyPatch
     assert finding.produce_type == "apple"
     assert finding.condition is Condition.ROTTEN
     assert finding.bbox is None
+    assert "Voice transcript analysis using model" in caplog.text
 
 
 def test_invalid_model_output_uses_keyword_fallback(monkeypatch: pytest.MonkeyPatch) -> None:

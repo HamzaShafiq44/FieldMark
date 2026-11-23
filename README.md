@@ -8,14 +8,20 @@ downloadable PDF report. Built as a software-only MVP for farmers grading produc
 - **Photo input** — upload an image or capture one with the device camera in the browser.
 - **Voice input** — record a voice note in the browser or upload an audio file; all transcription
   uses Gemini 3.5 Transcribe.
+- **Background jobs** — uploads are queued and processed off the request path. Switch to Categories,
+  refresh, or close the tab: the top bar keeps a staged progress bar, a toast announces the verdict,
+  and the result reopens when you return to Inspect. The PDF continues in the background afterward.
 - **AI finding** — detected product, edibility, condition, confidence, defect types
   (bruise / rot / mold / deformity), severity, and a bounding box.
+- **Editable prompts** — AI instructions live in validated YAML files under `app/ai/prompt_templates/`;
+  set `PROMPT_TEMPLATES_DIR` to edit them without rebuilding the image.
 - **Deterministic grading** — A / B / Reject / Needs manual review with plain-language verdict notes
   and sell-or-discard advice.
 - **Defect location** — an annotated JPEG is generated from the model's bounding box.
 - **PDF report** — a one-page, AI-written report rebuilt on download, with a deterministic fallback
   if AI writing fails. The verdict returns as soon as the evidence is analyzed (photo or voice
-  note); the report is generated in the background and the download button appears when it is ready.
+  note); the report is generated in the same background job and the download button appears when it
+  is ready.
 - **History and categories** — browse past inspections with thumbnails and report status, and manage
   the products the inspector expects.
 
@@ -152,7 +158,7 @@ data/           Local SQLite database and images (gitignored)
 ## Testing
 
 ```bash
-# backend: 127 tests, ~87% coverage; AI clients are mocked so the suite is offline
+# backend: 143 tests, ~87% coverage; AI clients are mocked so the suite is offline
 uv run pytest --cov=app --cov-report=term-missing
 uv run ruff check .
 uv run ruff format --check .

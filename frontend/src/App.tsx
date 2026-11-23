@@ -1,9 +1,10 @@
-import { Leaf, Moon, Sun } from 'lucide-react'
+import { CircleCheck, Leaf, LoaderCircle, Moon, Sun, TriangleAlert } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Route, Routes } from 'react-router-dom'
 import './App.css'
 import CategoriesPage from './pages/CategoriesPage'
 import InspectPage from './pages/InspectPage'
+import { useInspectionJobs } from './context/useInspectionJobs.ts'
 import { checkApiHealth, type ApiStatus } from './services/api'
 
 const THEME_STORAGE_KEY = 'fieldmark-theme'
@@ -16,9 +17,27 @@ function getInitialTheme(): Theme {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
+function progressForStage(stage: string | undefined): number {
+  if (stage === 'validating') return 15
+  if (stage === 'analyzing') return 55
+  if (stage === 'report') return 85
+  return 5
+}
+
+function labelForStage(stage: string | undefined, kind: string | undefined): string {
+  const voice = kind === 'voice'
+  if (stage === 'validating') return 'Uploading…'
+  if (stage === 'analyzing') return voice ? 'Reading voice note…' : 'Analyzing photo…'
+  if (stage === 'report') return 'Writing report…'
+  return 'Processing…'
+}
+
 function App() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>('checking')
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
+  const { activeCount, activeJob, toasts, dismissToast } = useInspectionJobs()
+  const progress = progressForStage(activeJob?.stage)
+  const progressLabel = labelForStage(activeJob?.stage, activeJob?.kind)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -89,6 +108,27 @@ function App() {
         </div>
       </header>
 
+      {activeCount > 0 && (
+        <div className="job-progress-banner" role="status" aria-live="polite">
+          <div className="job-progress-heading">
+            <span className="job-progress-label">
+              <LoaderCircle className="spin" size={15} />
+              {progressLabel}
+            </span>
+            {activeCount > 1 && <span className="job-progress-count">+{activeCount - 1} more</span>}
+          </div>
+          <div
+            className="job-progress-track"
+            role="progressbar"
+            aria-valuenow={progress}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <span style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+      )}
+
       <main>
         <Routes>
           <Route path="/" element={<InspectPage onApiStatusChange={setApiStatus} />} />
@@ -105,6 +145,19 @@ function App() {
           MADE FOR THE FIELD <span className="footer-sun">✳</span>
         </span>
       </footer>
+      <div className="job-toasts" aria-live="polite">
+        {toasts.map((toast) => (
+          <button
+            className={`job-toast job-toast-${toast.kind}`}
+            key={toast.id}
+            type="button"
+            onClick={() => dismissToast(toast.id)}
+          >
+            {toast.kind === 'success' ? <CircleCheck size={16} /> : <TriangleAlert size={16} />}
+            <span>{toast.message}</span>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

@@ -1,5 +1,6 @@
 """Tests for Gemini 3.5 Transcribe voice-note handling."""
 
+import logging
 from unittest.mock import Mock, patch
 
 import pytest
@@ -23,8 +24,11 @@ def _mock_client(transcript: str = "The tomato looks rotten.") -> Mock:
     return client
 
 
-def test_gemini_transcription_returns_output_text(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gemini_transcription_returns_output_text(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     """Call the transcribe model with the uploaded audio and return its text."""
+    caplog.set_level(logging.INFO)
     monkeypatch.setattr(settings, "gemini_api_key", SecretStr("test-key"))
     client = _mock_client()
     with patch.object(gemini_transcribe.genai, "Client", return_value=client) as factory:
@@ -36,6 +40,7 @@ def test_gemini_transcription_returns_output_text(monkeypatch: pytest.MonkeyPatc
     assert options.timeout == settings.gemini_timeout_ms
     request = client.interactions.create.call_args.kwargs
     assert request["model"] == "gemini-3.5-transcribe"
+    assert "Voice transcription using model gemini-3.5-transcribe" in caplog.text
     assert request["generation_config"] == {"transcription_config": {"mode": "verbatim"}}
     assert request["input"] == [
         {

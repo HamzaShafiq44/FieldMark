@@ -142,7 +142,7 @@ hosted-model round trips.
   and input size/format limits.
 - **Single-command Docker deployment** with a backend healthcheck and a persistent history volume.
 - **Interactive API docs** at `/docs` and a `/health` endpoint.
-- **Automated checks**: 127 tests with mocked AI clients, a coverage report, and lint/format/type
+- **Automated checks**: 143 tests with mocked AI clients, a coverage report, and lint/format/type
   gates (see §15).
 
 ## 4. System context
@@ -178,6 +178,7 @@ uses Gemini 3.5 Transcribe, regardless of the selected vision provider.
 | `app/api/routes_inspection.py` | HTTP boundary: multipart parsing, size/format guards, domain-to-HTTP error mapping, pagination limits |
 | `app/api/routes_categories.py` | Category API: list, create, rename/enable/disable, delete |
 | `app/services/inspection_service.py` | Image validation (PIL), active-category loading, deterministic grading rules, verdict notes, persistence |
+| `app/services/job_service.py` | In-memory job registry, upload storage, and the background worker that runs analysis and reporting |
 | `app/services/category_service.py` | Category validation, slug generation, limits, and lifecycle rules |
 | `app/services/report_service.py` | Orchestrates transcription, AI narrative, PDF rendering, and report persistence |
 | `app/ai/provider_factory.py` | Builds the configured `VisionDetector` from settings (no network at construction) |
@@ -188,15 +189,19 @@ uses Gemini 3.5 Transcribe, regardless of the selected vision provider.
 | `app/ai/gemini_transcribe.py` | Gemini 3.5 Transcribe for all voice notes (inspections and PDF reports) |
 | `app/ai/transcription.py` | Single transcription entry point (Gemini) used by voice-only inspections |
 | `app/ai/errors.py` | Shared `ReportAIError` for transcription and report-writing failures |
-| `app/ai/schemas.py` | Pydantic contracts: `Finding`, `InspectionResult`, `InspectionReportText`, history models |
-| `app/ai/prompts.py` | System/user prompts for the vision model, including injection-hardening rules |
+| `app/ai/schemas.py` | Pydantic contracts: `Finding`, `InspectionResult`, `InspectionReportText`, history and job models |
+| `app/ai/prompt_config.py` | Loads, validates, caches, and substitutes the YAML prompt templates |
+| `app/ai/prompt_templates/*.yaml` | Editable prompt text: inspection, localization, report, and voice analysis |
+| `app/ai/prompts.py` | Stable facade exposing the loaded vision prompts to providers |
 | `app/reports/pdf_renderer.py` | One-page reportlab PDF: metadata, evidence photos, quick-scan card, narrative |
 | `app/storage/inspection_repository.py` | Parameterized SQLite access, image/report paths, schema migration |
 | `app/storage/category_repository.py` | Category persistence and default seeding in SQLite |
 | `app/core/config.py` | Environment-driven `Settings` for providers, models, limits, and storage paths |
 | `frontend/src/services/api.ts` | Inspection API boundary: typed calls, `ApiError`, URL building |
 | `frontend/src/services/categories.ts` | Category API calls and types |
-| `frontend/src/App.tsx` | App shell, navigation, theme, API status, routes |
+| `frontend/src/context/InspectionJobsContext.tsx` | Provider above the router: submits jobs, polls status, toasts, last completed result |
+| `frontend/src/context/useInspectionJobs.ts` | Hook used by pages to read the job manager |
+| `frontend/src/App.tsx` | App shell, navigation, theme, API status, routes, global progress indicator and toasts |
 | `frontend/src/pages/InspectPage.tsx` | Upload/camera, result panel, report download, history, clear |
 | `frontend/src/pages/CategoriesPage.tsx` | Category list, add/rename/enable/disable/delete |
 
@@ -287,6 +292,30 @@ and the rebuilt PDF is returned as a download. The web UI does not expose this u
 `report_source_available` flags. `DELETE /inspections/history` deletes database rows and removes
 the `images/` and `reports/` directories. `GET .../thumbnail` streams the 192×192 JPEG preview.
 
+### 6.4 Background inspection jobs
+
+The React app uses `POST /inspections/jobs` rather than the synchronous inspection endpoint. The
+route validates the upload, writes the raw bytes under `data/uploads/`, creates an in-memory job,
+and returns **202** with a job ID immediately. `process_job()` then runs in a FastAPI background
+task: it reads the upload, calls `inspect_produce()` or `inspect_from_voice()` with the job's
+`inspection_id`, and publishes the verdict immediately by marking the job `completed` with stage
+`report`. Localization and report generation then continue in `_finish_report()`; a reporting
+failure cannot turn an already delivered verdict into a failed job. Each stage logs its duration
+(validation, vision, persistence, report writing, PDF rendering) so slow hosted calls can be
+identified from the logs. At most two jobs run concurrently; failures are recorded on the job
+rather than propagated to the client.
+
+`GET /inspections/jobs` and `GET /inspections/jobs/{id}` expose job state to any page. The job
+manager in `InspectionJobsProvider` lives above React Router, so switching from Inspect to
+Categories does not cancel or forget a job: the top bar keeps a staged progress bar
+(`validating` → `analyzing` → `report` → `done`) with a stage label, a toast announces the verdict,
+and returning to Inspect reopens it. While the report is still being written the verdict is already
+visible with a "Preparing PDF…" note, and the progress bar continues until `report_ready` is set.
+The result panel is session-only: a browser refresh clears it, and a stale result is never shown
+while another job is analyzing. Jobs are in-memory and therefore lost on
+server restart; startup clears orphaned upload files. The older synchronous endpoints remain
+available for API consumers.
+
 ## 7. Data model
 
 Single SQLite file (default `data/inspections.sqlite3`), created and migrated lazily on first
@@ -356,6 +385,9 @@ directories along with the database rows. Images are never stored as BLOBs in SQ
 | POST | `/inspections/product` | 200 `InspectionResult` | 400 invalid image, 413 too large | 500 storage, 502 detection |
 | POST | `/inspections/produce` (legacy alias) | 200 `InspectionResult` | same | same |
 | POST | `/inspections/tomato` (legacy alias) | 200 `InspectionResult` | same | same |
+| POST | `/inspections/jobs` | 202 `InspectionJob` (job ID) | 400 neither/both files, 413 too large | 500 storage |
+| GET | `/inspections/jobs` | 200 list of recent jobs | — | — |
+| GET | `/inspections/jobs/{id}` | 200 `InspectionJob` | 404 | — |
 | GET | `/inspections/history?limit&offset` | 200 page (limit 1–100, default 20) | 422 invalid query | 500 |
 | DELETE | `/inspections/history` | 204 | — | 500 |
 | GET | `/inspections/history/{id}/thumbnail` | 200 JPEG | 404 | 500 |
@@ -383,6 +415,12 @@ flowchart LR
 
 - `VisionDetector` is a callable protocol (`__call__(image) -> Finding`) in `app/ai/providers.py`;
   both providers implement it and raise `DetectionError` on failure.
+- **Editable prompts.** Prompt text lives in four YAML files under `app/ai/prompt_templates/`
+  (inspection, localization, report, voice analysis). `app/ai/prompt_config.py` validates each file
+  against a Pydantic schema, substitutes `${placeholders}` such as the active category list, caches
+  the result, and fails fast on missing or malformed configuration. The default directory is bundled
+  in the image; `PROMPT_TEMPLATES_DIR` can point to a mounted folder to edit prompts without a
+  rebuild. `app/ai/prompts.py` keeps the original public API for providers and tests.
 - **Client reuse and latency bounds.** `app/ai/client_factory.py` caches one Groq/Gemini SDK client
   per credential with a bounded request timeout (`GROQ_TIMEOUT_SECONDS`, `GEMINI_TIMEOUT_MS`) so a
   stalled provider cannot hold a worker thread indefinitely and no request pays for a new TLS
@@ -465,6 +503,7 @@ Logs record exception *types*, never keys or personal data.
 | Variable | Default | Purpose |
 |---|---|---|
 | `VISION_PROVIDER` | `groq` | `groq` or `gemini` |
+| `PROMPT_TEMPLATES_DIR` | `app/ai/prompt_templates` | Directory of validated YAML prompt templates |
 | `GROQ_API_KEY` | *(empty)* | Required for Groq vision and report writing |
 | `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Vision model |
 | `GROQ_REPORT_MODEL` | `openai/gpt-oss-20b` | Report narrative model |
@@ -501,7 +540,7 @@ fallback for routes such as `/categories`. CORS middleware in FastAPI allows the
 
 ## 15. Testing
 
-`uv run pytest --cov=app --cov-report=term-missing` — 127 tests, 87% line coverage.
+`uv run pytest --cov=app --cov-report=term-missing` — 143 tests, 87% line coverage.
 
 - `tests/test_api.py` — route behavior, status-code mapping, pagination, oversized/invalid
   uploads, report routes, an end-to-end happy path through the API with a mocked detector.

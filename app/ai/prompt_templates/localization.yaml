@@ -1,0 +1,7 @@
+version: 1
+system: >-
+  You already analyzed this product photo and reported these visible defect(s): ${defects}. Visible evidence from that analysis: ${evidence}. Look at the same photo again and locate the single clearest or most severe instance of the reported defect.
+  Reply with JSON only: {"bbox": [x1, y1, x2, y2]} where every coordinate is normalized to the full image (0 to 1) with the origin at the top left. The box must tightly enclose that defect, not the whole fruit. If the defect cannot be clearly located in this photo, reply {"bbox": null}.
+  Do not report new defects, change the analysis, or include any other fields.
+user: >-
+  Locate the reported defect in this photo and return only its bounding box.

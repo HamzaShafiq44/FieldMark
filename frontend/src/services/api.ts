@@ -28,6 +28,22 @@ export interface InspectionResult {
   voice_note_transcript?: string
 }
 
+export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed'
+export type JobKind = 'image' | 'voice'
+
+export interface InspectionJob {
+  job_id: string
+  kind: JobKind
+  status: JobStatus
+  stage: string
+  created_at: string
+  inspection_id: string | null
+  result: InspectionResult | null
+  error: string | null
+  filename: string
+  report_ready: boolean
+}
+
 export interface InspectionHistoryItem {
   inspection_id: string
   created_at: string
@@ -131,6 +147,68 @@ async function postInspection(formData: FormData): Promise<InspectionResult> {
   } finally {
     window.clearTimeout(timeoutId)
   }
+}
+
+/** Submit an image without waiting for the AI work to finish. */
+const JOB_SUBMIT_TIMEOUT_MS = 15_000
+
+export async function submitImageJob(file: File): Promise<InspectionJob> {
+  const formData = new FormData()
+  formData.append('image', file)
+  return submitJob(formData)
+}
+
+export async function submitVoiceJob(file: File): Promise<InspectionJob> {
+  const formData = new FormData()
+  formData.append('voice_note', file)
+  return submitJob(formData)
+}
+
+async function submitJob(formData: FormData): Promise<InspectionJob> {
+  const controller = new AbortController()
+  const timeoutId = window.setTimeout(() => controller.abort(), JOB_SUBMIT_TIMEOUT_MS)
+  try {
+    const response = await fetch(apiUrl('/inspections/jobs'), {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      const body = (await response.json()) as { detail?: unknown }
+      const message =
+        typeof body.detail === 'string'
+          ? body.detail
+          : `Inspection could not be queued (status ${response.status}).`
+      throw new ApiError(message, response.status)
+    }
+    return (await response.json()) as InspectionJob
+  } catch (caught: unknown) {
+    if (caught instanceof DOMException && caught.name === 'AbortError') {
+      throw new ApiError('The upload took too long. Check your connection and try again.', 408)
+    }
+    throw caught
+  } finally {
+    window.clearTimeout(timeoutId)
+  }
+}
+
+export async function listJobs(): Promise<InspectionJob[]> {
+  const response = await fetch(apiUrl('/inspections/jobs'))
+  if (!response.ok) {
+    throw new ApiError(
+      `Could not load inspection progress (status ${response.status}).`,
+      response.status,
+    )
+  }
+  return (await response.json()) as InspectionJob[]
+}
+
+export async function getJob(jobId: string): Promise<InspectionJob> {
+  const response = await fetch(apiUrl(`/inspections/jobs/${jobId}`))
+  if (!response.ok) {
+    throw new ApiError(`Inspection job not found (status ${response.status}).`, response.status)
+  }
+  return (await response.json()) as InspectionJob
 }
 
 export async function listInspectionHistory(): Promise<InspectionHistoryItem[]> {

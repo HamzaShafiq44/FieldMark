@@ -8,7 +8,21 @@ from pydantic import SecretStr
 from app.ai import client_factory
 from app.api import routes_inspection
 from app.core.config import settings
-from app.services import inspection_service
+from app.services import inspection_service, job_service
+
+
+@pytest.fixture(autouse=True)
+def reset_job_registry() -> Iterator[None]:
+    """Isolate the in-memory job registry between tests."""
+    job_service.clear_jobs()
+    yield
+    job_service.clear_jobs()
+
+
+@pytest.fixture(autouse=True)
+def disable_job_finalization(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep job tests offline; job-specific tests may override this."""
+    monkeypatch.setattr(job_service, "finalize_inspection", lambda _: None)
 
 
 @pytest.fixture(autouse=True)

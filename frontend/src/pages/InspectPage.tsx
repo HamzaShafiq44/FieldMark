@@ -19,7 +19,6 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react'
 import {
-  ApiError,
   classifyInspectionResult,
   clearInspectionHistory,
   type Verdict,
@@ -27,22 +26,19 @@ import {
   inspectionAnnotatedUrl,
   inspectionOriginalUrl,
   inspectionThumbnailUrl,
-  inspectProduce,
-  inspectVoiceNote,
   listInspectionHistory,
   relocateDefect,
   type ApiStatus,
   type InspectionHistoryItem,
   type InspectionResult,
 } from '../services/api'
+import { useInspectionJobs } from '../context/useInspectionJobs.ts'
 import { listCategories, type ProductCategory } from '../services/categories'
 import { prepareRecording, SILENCE_PEAK_THRESHOLD } from '../utils/audio'
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const MAX_VOICE_NOTE_BYTES = 25 * 1024 * 1024
 const PDF_URL_REVOKE_DELAY_MS = 1_000
-const REPORT_POLL_INTERVAL_MS = 2_000
-const REPORT_POLL_MAX_ATTEMPTS = 20
 const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const ACCEPTED_VOICE_NOTE_TYPES = new Set([
   'audio/mpeg',
@@ -227,6 +223,26 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
 }
 
+function stageMessage(stage: string | undefined, kind: 'image' | 'voice'): string {
+  if (stage === 'validating') return 'Preparing your upload…'
+  if (stage === 'analyzing') {
+    return kind === 'voice'
+      ? 'Reading what you said and estimating a quality grade…'
+      : 'Checking visible signs and estimating a quality grade…'
+  }
+  if (stage === 'report') return 'Writing your report…'
+  return kind === 'voice'
+    ? 'Reading what you said and estimating a quality grade.'
+    : 'Checking visible signs and estimating a quality grade.'
+}
+
+function stageProgress(stage: string | undefined): number {
+  if (stage === 'validating') return 15
+  if (stage === 'analyzing') return 55
+  if (stage === 'report') return 85
+  return 5
+}
+
 function formatInspectionDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
@@ -248,13 +264,24 @@ interface InspectPageProps {
 }
 
 function InspectPage({ onApiStatusChange }: InspectPageProps) {
+  const {
+    jobs,
+    startImageJob,
+    startVoiceJob,
+    lastCompleted,
+    clearLastCompleted,
+    submitError,
+    clearSubmitError,
+    jobError,
+    clearJobError,
+  } = useInspectionJobs()
   const cameraInput = useRef<HTMLInputElement>(null)
   const voiceNoteInput = useRef<HTMLInputElement>(null)
   const previewUrlRef = useRef<string | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const [result, setResult] = useState<InspectionResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState<InspectionResult | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   // One flag per action so inspecting a voice note never spins the photo button.
   const [activeInspection, setActiveInspection] = useState<'image' | 'voice' | null>(null)
@@ -286,14 +313,20 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
   const [activeDeviceLabel, setActiveDeviceLabel] = useState<string | null>(null)
   const [reportActionId, setReportActionId] = useState<string | null>(null)
-  const [reportPending, setReportPending] = useState(false)
   const [reportError, setReportError] = useState<string | null>(null)
+  // The submit call returns in milliseconds; the UI must keep spinning until
+  // the queued job actually finishes, not until the upload request ends.
+  const analysisJob = jobs.find((job) => job.status === 'queued' || job.status === 'processing')
+  const loadingKind = activeInspection ?? analysisJob?.kind ?? null
+  const reportPending = jobs.some((job) => job.status === 'completed' && job.stage === 'report')
+  // Never show a previous verdict while a new job is still processing.
+  const visibleResult = loadingKind ? null : result
   const [relocationId, setRelocationId] = useState<string | null>(null)
   const [relocationError, setRelocationError] = useState<string | null>(null)
   const [categories, setCategories] = useState<ProductCategory[]>(FALLBACK_CATEGORIES)
-  const resultClassification = result ? classifyInspectionResult(result) : null
+  const resultClassification = visibleResult ? classifyInspectionResult(visibleResult) : null
   const isUnsupportedItem = resultClassification === 'unsupported_item'
-  const isVoiceOnlyResult = Boolean(result?.voice_note_transcript)
+  const isVoiceOnlyResult = Boolean(visibleResult?.voice_note_transcript)
   const activeCategories = categories.filter((category) => category.is_active)
   const heroCategories = activeCategories.slice(0, HERO_CARD_SLOTS.length)
   const visibleHistory = history.filter((item) => matchesHistoryFilter(item, historyFilter))
@@ -358,44 +391,17 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
     }
   }, [])
 
-  // Reports are generated after the inspection response is sent. Poll
-  // history briefly so the download button appears once the PDF is ready.
   useEffect(() => {
-    if (!result || result.report_available) return
-    let active = true
-    let attempts = 0
-    const timer = window.setInterval(() => {
-      attempts += 1
-      listInspectionHistory()
-        .then((items) => {
-          if (!active) return
-          setHistory(items)
-          const stored = items.find((item) => item.inspection_id === result.inspection_id)
-          if (stored?.report_available) {
-            setResult((current) =>
-              current && current.inspection_id === result.inspection_id
-                ? { ...current, report_available: true }
-                : current,
-            )
-            setReportPending(false)
-            window.clearInterval(timer)
-          } else if (attempts >= REPORT_POLL_MAX_ATTEMPTS) {
-            setReportPending(false)
-            window.clearInterval(timer)
-          }
-        })
-        .catch(() => {
-          if (active) {
-            setReportPending(false)
-            window.clearInterval(timer)
-          }
-        })
-    }, REPORT_POLL_INTERVAL_MS)
-    return () => {
-      active = false
-      window.clearInterval(timer)
-    }
-  }, [result])
+    if (!lastCompleted) return
+    // Defer to the next tick so a completed job reopens its result without a
+    // synchronous state update during render.
+    const timer = window.setTimeout(() => {
+      setResult(lastCompleted)
+      clearLastCompleted()
+      void refreshHistory()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [lastCompleted, clearLastCompleted, refreshHistory])
 
   useEffect(() => {
     let active = true
@@ -798,7 +804,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   }
 
   const handleInspect = async (kind: 'image' | 'voice') => {
-    if (activeInspection) return
+    if (loadingKind) return
     if (kind === 'image' && !file) return
     if (kind === 'voice' && !voiceNoteFile) return
 
@@ -807,26 +813,14 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
     setError(null)
     setResult(null)
     setReportError(null)
+    clearSubmitError()
+    clearJobError()
     try {
-      const inspection =
-        kind === 'voice' ? await inspectVoiceNote(voiceNoteFile!) : await inspectProduce(file!)
-      setResult(inspection)
-      setReportPending(!inspection.report_available)
+      if (kind === 'voice') await startVoiceJob(voiceNoteFile!)
+      else await startImageJob(file!)
       onApiStatusChange('connected')
-      void refreshHistory()
     } catch (caught: unknown) {
-      if (caught instanceof TypeError) {
-        onApiStatusChange('offline')
-        setError('Could not reach the API. Make sure the backend is running, then try again.')
-      } else if (caught instanceof ApiError && caught.status === 502) {
-        onApiStatusChange('connected')
-        setError(
-          'The vision service could not complete this inspection. Check model availability, API limits, and try again.',
-        )
-      } else {
-        onApiStatusChange('connected')
-        setError(caught instanceof Error ? caught.message : 'Inspection failed. Please try again.')
-      }
+      onApiStatusChange(caught instanceof TypeError ? 'offline' : 'connected')
     } finally {
       setActiveInspection(null)
     }
@@ -838,7 +832,6 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
     setPreviewUrl(null)
     setFile(null)
     setResult(null)
-    setReportPending(false)
     if (isRecording) stopRecording()
     setVoiceNoteFile(null)
     updateVoiceAudioUrl(null)
@@ -885,7 +878,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   }
 
   const handleClearHistory = async () => {
-    if (isClearingHistory || activeInspection || reportActionId || history.length === 0) return
+    if (isClearingHistory || loadingKind || reportActionId || history.length === 0) return
     const confirmed = window.confirm(
       'Permanently delete all saved inspections, original photos, and PDF reports? This cannot be undone.',
     )
@@ -897,7 +890,6 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
       await clearInspectionHistory()
       setHistory([])
       setResult(null)
-      setReportPending(false)
       if (isRecording) stopRecording()
       setVoiceNoteFile(null)
       updateVoiceAudioUrl(null)
@@ -1064,9 +1056,9 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
             className="inspect-button"
             type="button"
             onClick={() => void handleInspect('image')}
-            disabled={!file || activeInspection !== null}
+            disabled={!file || loadingKind !== null}
           >
-            {activeInspection === 'image' ? (
+            {loadingKind === 'image' ? (
               <>
                 <LoaderCircle className="spin" size={18} /> Inspecting photo
               </>
@@ -1131,7 +1123,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                     userSelectedDeviceRef.current = true
                     setSelectedDeviceId(event.target.value)
                   }}
-                  disabled={isRecording || activeInspection !== null}
+                  disabled={isRecording || loadingKind !== null}
                 >
                   {audioDevices.length === 0 ? (
                     <option value="">Default microphone</option>
@@ -1163,7 +1155,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                   className="camera-button recording-btn"
                   type="button"
                   onClick={() => void startRecording()}
-                  disabled={activeInspection !== null}
+                  disabled={loadingKind !== null}
                 >
                   <Mic size={16} /> Record in browser
                 </button>
@@ -1244,9 +1236,9 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
             className="inspect-button"
             type="button"
             onClick={() => void handleInspect('voice')}
-            disabled={!voiceNoteFile || activeInspection !== null || isRecording}
+            disabled={!voiceNoteFile || loadingKind !== null || isRecording}
           >
-            {activeInspection === 'voice' ? (
+            {loadingKind === 'voice' ? (
               <>
                 <LoaderCircle className="spin" size={18} /> Analyzing voice note
               </>
@@ -1262,7 +1254,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
         </section>
 
         <section
-          className={`result-panel ${result ? `result-${result.verdict}` : ''}`}
+          className={`result-panel ${visibleResult ? `result-${visibleResult.verdict}` : ''}`}
           aria-live="polite"
         >
           <div className="result-panel-top">
@@ -1270,51 +1262,47 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
               <p className="section-kicker">
                 02 <span>/</span> INSPECTION RESULT
               </p>
-              <h2>{result ? 'Your quality readout' : 'Your result, right here.'}</h2>
+              <h2>{visibleResult ? 'Your quality readout' : 'Your result, right here.'}</h2>
             </div>
-            {result && (
+            {visibleResult && (
               <span
                 className={`verdict-pill ${
-                  isUnsupportedItem ? 'verdict-needs_review' : `verdict-${result.verdict}`
+                  isUnsupportedItem ? 'verdict-needs_review' : `verdict-${visibleResult.verdict}`
                 }`}
               >
-                {isUnsupportedItem ? 'Unsupported item' : VERDICT_LABELS[result.verdict]}
+                {isUnsupportedItem ? 'Unsupported item' : VERDICT_LABELS[visibleResult.verdict]}
               </span>
             )}
           </div>
 
-          {error ? (
+          {error || submitError || jobError ? (
             <div className="result-message error-message">
               <span className="message-icon">
                 <CircleAlert size={22} />
               </span>
               <h3>Inspection didn’t finish</h3>
-              <p>{error}</p>
+              <p>{submitError || jobError || error}</p>
               <button
                 type="button"
                 className="retry-button"
                 onClick={() => void handleInspect(lastInspectionKindRef.current)}
-                disabled={activeInspection !== null}
+                disabled={loadingKind !== null}
               >
                 Try again <RefreshCw size={15} />
               </button>
             </div>
-          ) : activeInspection ? (
+          ) : loadingKind ? (
             <div className="result-message loading-message">
               <span className="scan-loader">
                 <ScanLine size={30} />
               </span>
               <h3>Looking a little closer…</h3>
-              <p>
-                {activeInspection === 'voice'
-                  ? 'Reading what you said and estimating a quality grade.'
-                  : 'Checking visible signs and estimating a quality grade.'}
-              </p>
+              <p>{stageMessage(analysisJob?.stage, loadingKind)}</p>
               <div className="loading-track">
-                <span />
+                <span style={{ width: `${stageProgress(analysisJob?.stage)}%` }} />
               </div>
             </div>
-          ) : result ? (
+          ) : visibleResult ? (
             <div className="result-content">
               {isVoiceOnlyResult && (
                 <div className="voice-result-intro">
@@ -1335,26 +1323,26 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                   <div className="grade-block">
                     <span className="result-label">QUALITY GRADE</span>
                     <strong
-                      className={`grade-value grade-${result.grade === 'A' ? 'a' : result.grade === 'B' ? 'b' : 'review'}`}
+                      className={`grade-value grade-${visibleResult.grade === 'A' ? 'a' : visibleResult.grade === 'B' ? 'b' : 'review'}`}
                     >
-                      {result.grade === 'Needs manual review' ? '—' : result.grade}
+                      {visibleResult.grade === 'Needs manual review' ? '—' : visibleResult.grade}
                     </strong>
                   </div>
                 )}
                 <div className="product-identified">
                   <span className="identified-emoji">
-                    {productEmoji(result, categories, isUnsupportedItem)}
+                    {productEmoji(visibleResult, categories, isUnsupportedItem)}
                   </span>
                   <span>
                     <small>{isUnsupportedItem ? 'DETECTED' : 'IDENTIFIED AS'}</small>
-                    <strong>{productName(result, categories)}</strong>
+                    <strong>{productName(visibleResult, categories)}</strong>
                   </span>
                 </div>
               </div>
 
               {resultClassification === 'out_of_categories' && (
                 <p className="category-notice" role="status">
-                  This product is {productName(result, categories)} - from out of inspection
+                  This product is {productName(visibleResult, categories)} - from out of inspection
                   products
                 </p>
               )}
@@ -1368,37 +1356,39 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                 <section className="photo-evidence" aria-label="Photo evidence">
                   <div className="photo-evidence-heading">
                     <span className="result-label">PHOTO EVIDENCE</span>
-                    {result.bbox && <span>Reported defect area marked</span>}
+                    {visibleResult.bbox && <span>Reported defect area marked</span>}
                   </div>
-                  <div className={`photo-evidence-grid ${result.bbox ? 'has-annotated' : ''}`}>
+                  <div
+                    className={`photo-evidence-grid ${visibleResult.bbox ? 'has-annotated' : ''}`}
+                  >
                     <figure className="photo-figure">
                       <img
-                        src={previewUrl ?? inspectionOriginalUrl(result.inspection_id)}
+                        src={previewUrl ?? inspectionOriginalUrl(visibleResult.inspection_id)}
                         alt="Original uploaded product photo"
                       />
                       <figcaption>Original photo</figcaption>
                     </figure>
-                    {result.bbox && (
+                    {visibleResult.bbox && (
                       <figure className="photo-figure">
                         <img
-                          src={inspectionAnnotatedUrl(result.inspection_id)}
+                          src={inspectionAnnotatedUrl(visibleResult.inspection_id)}
                           alt="Product photo with the reported defect area marked"
                         />
                         <figcaption>Reported defect area</figcaption>
                       </figure>
                     )}
                   </div>
-                  {!result.bbox &&
+                  {!visibleResult.bbox &&
                     !isUnsupportedItem &&
-                    (result.defect_types.length > 0 || result.grade === 'Reject') && (
+                    (visibleResult.defect_types.length > 0 || visibleResult.grade === 'Reject') && (
                       <div className="relocate-action">
                         <button
                           className="history-report-button"
                           type="button"
-                          onClick={() => void handleRelocateDefect(result.inspection_id)}
+                          onClick={() => void handleRelocateDefect(visibleResult.inspection_id)}
                           disabled={relocationId !== null}
                         >
-                          {relocationId === result.inspection_id ? (
+                          {relocationId === visibleResult.inspection_id ? (
                             <LoaderCircle className="spin" size={14} />
                           ) : (
                             <ScanLine size={14} />
@@ -1422,9 +1412,9 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                       <span className="result-label">
                         {isVoiceOnlyResult ? 'REPORTED DEFECTS' : 'VISIBLE DEFECTS'}
                       </span>
-                      {result.defect_types.length ? (
+                      {visibleResult.defect_types.length ? (
                         <div className="defect-tags">
-                          {result.defect_types.map((defect) => (
+                          {visibleResult.defect_types.map((defect) => (
                             <span className="defect-tag" key={defect}>
                               {defect}
                             </span>
@@ -1439,8 +1429,8 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                     </div>
                     <div className="detail-cell">
                       <span className="result-label">SEVERITY</span>
-                      <strong className={`severity-value severity-${result.severity}`}>
-                        {result.severity}
+                      <strong className={`severity-value severity-${visibleResult.severity}`}>
+                        {visibleResult.severity}
                       </strong>
                     </div>
                   </div>
@@ -1448,7 +1438,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                   <section className="verdict-notes" aria-label="Decision basis">
                     <h3>Why this verdict?</h3>
                     <ul>
-                      {result.verdict_notes.map((note) => (
+                      {visibleResult.verdict_notes.map((note) => (
                         <li key={note}>{note}</li>
                       ))}
                     </ul>
@@ -1460,20 +1450,20 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                     </span>
                     <span>
                       <small>RECOMMENDED NEXT STEP</small>
-                      <strong>{result.recommended_action}</strong>
+                      <strong>{visibleResult.recommended_action}</strong>
                     </span>
                   </div>
                 </>
               )}
-              {result.voice_note_transcript && (
+              {visibleResult.voice_note_transcript && (
                 <section className="transcript-section" aria-label="Voice note transcript">
                   <span className="result-label">VOICE NOTE TRANSCRIPT</span>
-                  <p className="transcript-text">“{result.voice_note_transcript}”</p>
+                  <p className="transcript-text">“{visibleResult.voice_note_transcript}”</p>
                 </section>
               )}
-              <p className="result-disclaimer">{result.disclaimer}</p>
+              <p className="result-disclaimer">{visibleResult.disclaimer}</p>
               <p className="inspection-id">
-                INSPECTION {result.inspection_id.slice(0, 8).toUpperCase()}
+                INSPECTION {visibleResult.inspection_id.slice(0, 8).toUpperCase()}
               </p>
               <section className="report-controls" aria-label="PDF inspection report">
                 <div>
@@ -1481,23 +1471,23 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                   <p>
                     {isUnsupportedItem
                       ? 'This item is outside the inspection categories, so no PDF report was created.'
-                      : result.report_available
+                      : visibleResult.report_available
                         ? isVoiceOnlyResult
                           ? 'Your PDF is ready with the grade and transcript from your voice note.'
                           : 'Your PDF is ready.'
                         : reportPending
-                          ? 'Your PDF is being prepared in the background and will appear here shortly.'
+                          ? 'Your PDF is being prepared in the background.'
                           : 'The PDF could not be created for this inspection.'}
                   </p>
                 </div>
-                {result.report_available && !isUnsupportedItem && (
+                {visibleResult.report_available && !isUnsupportedItem && (
                   <button
                     className="report-button"
                     type="button"
-                    onClick={() => void handleDownloadReport(result.inspection_id)}
+                    onClick={() => void handleDownloadReport(visibleResult.inspection_id)}
                     disabled={reportActionId !== null}
                   >
-                    {reportActionId === result.inspection_id ? (
+                    {reportActionId === visibleResult.inspection_id ? (
                       <>
                         <LoaderCircle className="spin" size={16} /> Preparing PDF
                       </>
@@ -1508,9 +1498,9 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                     )}
                   </button>
                 )}
-                {!result.report_available && (
+                {!visibleResult.report_available && (
                   <p className="report-unavailable">
-                    {reportPending && !isUnsupportedItem ? 'Preparing PDF…' : 'Report unavailable.'}
+                    {reportPending ? 'Preparing PDF…' : 'Report unavailable.'}
                   </p>
                 )}
                 {reportError && (
@@ -1568,7 +1558,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                 history.length === 0 ||
                 isHistoryLoading ||
                 isClearingHistory ||
-                activeInspection !== null ||
+                loadingKind !== null ||
                 reportActionId !== null
               }
             >

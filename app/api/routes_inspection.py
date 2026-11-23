@@ -9,8 +9,15 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 
-from app.ai.schemas import InspectionHistoryResponse, InspectionResult, ReportUserType
+from app.ai.schemas import (
+    InspectionHistoryResponse,
+    InspectionJob,
+    InspectionResult,
+    JobKind,
+    ReportUserType,
+)
 from app.core.config import settings
+from app.services import job_service
 from app.services.inspection_service import (
     DefectRelocationError,
     InspectionDetectionError,
@@ -73,6 +80,57 @@ VOICE_NOTE_MEDIA_TYPES = frozenset(
 )
 # Browsers sometimes leave a known extension without a useful MIME type.
 VOICE_NOTE_GENERIC_MEDIA_TYPES = frozenset({"", "application/octet-stream"})
+JOB_NOT_FOUND = "Inspection job not found."
+
+
+@router.post("/jobs", response_model=InspectionJob, status_code=status.HTTP_202_ACCEPTED)
+async def submit_inspection_job_route(
+    background_tasks: BackgroundTasks,
+    image: Annotated[UploadFile | None, File()] = None,
+    voice_note: Annotated[UploadFile | None, File()] = None,
+) -> InspectionJob:
+    """Queue an image or voice note for background processing.
+
+    The response returns immediately with a job ID; analysis, refinement, and
+    reporting continue in a worker regardless of what the browser does next.
+    """
+    if (image is None and voice_note is None) or (image is not None and voice_note is not None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide either an image or a voice note, not both.",
+        )
+    if image is not None:
+        data = await image.read(settings.max_image_bytes + 1)
+        if len(data) > settings.max_image_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=PAYLOAD_TOO_LARGE
+            )
+        job = job_service.create_job(JobKind.IMAGE, data)
+    else:
+        voice_data, voice_filename = await _read_voice_note(voice_note)
+        if voice_data is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Voice note could not be read."
+            )
+        job = job_service.create_job(JobKind.VOICE, voice_data, voice_filename)
+    background_tasks.add_task(job_service.process_job, job.job_id)
+    LOGGER.info("Queued inspection job %s (%s).", job.job_id, job.kind.value)
+    return job
+
+
+@router.get("/jobs", response_model=list[InspectionJob])
+async def list_inspection_jobs_route() -> list[InspectionJob]:
+    """Return recent jobs so clients can restore progress after a refresh."""
+    return job_service.list_jobs()
+
+
+@router.get("/jobs/{job_id}", response_model=InspectionJob)
+async def get_inspection_job_route(job_id: UUID) -> InspectionJob:
+    """Return the status and result of one background job."""
+    job = job_service.get_job(str(job_id))
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=JOB_NOT_FOUND)
+    return job
 
 
 @router.post("/tomato", response_model=InspectionResult, include_in_schema=False)

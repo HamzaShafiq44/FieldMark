@@ -1,6 +1,7 @@
 """Tests for configurable vision providers."""
 
 import json
+import logging
 from unittest.mock import Mock, patch
 
 import pytest
@@ -68,8 +69,9 @@ def test_groq_without_api_key_fails_clearly() -> None:
         detector(_image())
 
 
-def test_groq_passes_configured_key_and_parses_finding() -> None:
+def test_groq_passes_configured_key_and_parses_finding(caplog: pytest.LogCaptureFixture) -> None:
     """Pass the configured secret explicitly to Groq and parse its response."""
+    caplog.set_level(logging.INFO)
     finding = {
         "produce_type": "tomato",
         "condition": "fresh",
@@ -87,6 +89,7 @@ def test_groq_passes_configured_key_and_parses_finding() -> None:
         timeout=settings.groq_timeout_seconds,
         max_retries=1,
     )
+    assert "Groq vision analysis using model vision-test" in caplog.text
     request_payload = client.chat.completions.create.call_args.kwargs
     image_url = request_payload["messages"][1]["content"][1]["image_url"]["url"]
     assert request_payload["model"] == "vision-test"
@@ -151,8 +154,10 @@ def test_gemini_reuses_a_live_client_across_calls() -> None:
 
 def test_gemini_falls_back_to_other_model_on_capacity_error(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Retry with fallback models when the primary is overloaded."""
+    caplog.set_level(logging.INFO)
     monkeypatch.setattr(settings, "gemini_fallback_backoff_seconds", 0)
     response = Mock()
     response.text = json.dumps(
@@ -179,6 +184,7 @@ def test_gemini_falls_back_to_other_model_on_capacity_error(
         "gemini-4-hydrogen",
         "gemini-3.8-flash",
     ]
+    assert "Gemini request using model gemini-3.8-flash" in caplog.text
     assert result.produce_type == "tomato"
 
 

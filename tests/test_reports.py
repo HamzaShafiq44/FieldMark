@@ -1,6 +1,7 @@
 """Focused tests for report evidence, validation, and PDF persistence."""
 
 import json
+import logging
 import re
 import sqlite3
 from collections.abc import Callable
@@ -317,8 +318,10 @@ def test_report_text_rejects_fields_outside_its_schema() -> None:
 
 def test_groq_report_writer_passes_context_and_validates_output(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Use GPT OSS by default without changing the configured vision model."""
+    caplog.set_level(logging.INFO)
     monkeypatch.setattr(settings, "groq_api_key", SecretStr("report-test-key"))
     monkeypatch.setattr(settings, "groq_report_model", "")
     monkeypatch.setattr(settings, "groq_vision_model", "qwen/qwen3.8-27b")
@@ -362,6 +365,7 @@ def test_groq_report_writer_passes_context_and_validates_output(
     request = client.chat.completions.create.call_args.kwargs
     context = json.loads(request["messages"][1]["content"])
     assert request["model"] == "openai/gpt-oss-20b"
+    assert "Report writing using model openai/gpt-oss-20b" in caplog.text
     assert context["user_type"] == "farmer"
     assert "everyday, practical language" in context["farmer_audience_guidance"]
     assert context["voice_note_transcript"] == "I noticed a soft spot."

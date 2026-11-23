@@ -97,6 +97,93 @@ main,
   font-weight: 650;
 }
 
+.job-progress-banner {
+  width: min(100% - 96px, 1280px);
+  margin: 0 auto;
+  padding: 12px 16px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.job-progress-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+  color: var(--forest);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.job-progress-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.job-progress-count {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.job-progress-track {
+  width: 100%;
+  height: 4px;
+  border-radius: 99px;
+  background: var(--track, #e3e9df);
+  overflow: hidden;
+}
+
+.job-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--leaf, #4f7a49);
+  transition: width 0.6s ease;
+}
+
+.loading-track span {
+  transition: width 0.6s ease;
+}
+
+.job-toasts {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.job-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 320px;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--white, #fff);
+  color: var(--forest);
+  box-shadow: 0 12px 30px rgba(17, 42, 33, 0.16);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.job-toast-success {
+  border-color: var(--leaf, #4f7a49);
+}
+
+.job-toast-error {
+  border-color: #bd4b3b;
+}
+
 .theme-toggle {
   display: inline-flex;
   align-items: center;
@@ -1280,11 +1367,10 @@ main,
 
 .loading-track span {
   display: block;
-  width: 34%;
+  width: 5%;
   height: 100%;
   border-radius: inherit;
   background: var(--lime);
-  animation: loading-sweep 1.3s ease-in-out infinite;
 }
 
 .how-it-works {
@@ -1442,6 +1528,7 @@ main,
 
 @media (max-width: 1000px) {
   .topbar,
+  .job-progress-banner,
   main,
   .footer {
     width: min(100% - 56px, 820px);
@@ -1481,6 +1568,7 @@ main,
 
 @media (max-width: 680px) {
   .topbar,
+  .job-progress-banner,
   main,
   .footer {
     width: min(100% - 34px, 560px);
@@ -1488,6 +1576,15 @@ main,
 
   .topbar {
     min-height: 72px;
+  }
+
+  .job-progress-banner {
+    padding: 10px 12px 12px;
+    border-radius: 12px;
+  }
+
+  .job-progress-heading {
+    font-size: 11px;
   }
 
   .brand-mark {
@@ -2043,6 +2140,14 @@ main,
 
 :root[data-theme='dark'] .connection-pill {
   background: #26352b;
+}
+
+:root[data-theme='dark'] .job-progress-banner {
+  background: #26352b;
+}
+
+:root[data-theme='dark'] .job-progress-track {
+  background: #3a4b3d;
 }
 
 :root[data-theme='dark'] .hero-art {

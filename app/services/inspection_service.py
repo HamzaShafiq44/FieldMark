@@ -1,6 +1,7 @@
 """Image validation and deterministic product grading logic."""
 
 import logging
+import time
 from io import BytesIO
 from typing import cast
 from uuid import uuid4
@@ -388,7 +389,9 @@ def _should_report_voice(result: InspectionResult) -> bool:
     return bool(result.voice_note_transcript) and not result.detected_item.strip()
 
 
-def inspect_from_voice(audio_data: bytes, filename: str) -> InspectionResult:
+def inspect_from_voice(
+    audio_data: bytes, filename: str, inspection_id: str | None = None
+) -> InspectionResult:
     """Transcribe a voice note, grade what was said, and save it like a photo inspection.
 
     The transcript is the only evidence, so the spoken product and condition are
@@ -405,7 +408,7 @@ def inspect_from_voice(audio_data: bytes, filename: str) -> InspectionResult:
     grade_value, action = grade(finding)
     verdict_value = _verdict(grade_value, finding)
     result = InspectionResult(
-        inspection_id=str(uuid4()),
+        inspection_id=inspection_id or str(uuid4()),
         produce_type=finding.produce_type,
         detected_item=finding.detected_item.strip(),
         item_is_fruit=finding.item_is_fruit,
@@ -435,6 +438,7 @@ def inspect_produce(
     data: bytes,
     detect: VisionDetector | None = None,
     supported_types: list[str] | None = None,
+    inspection_id: str | None = None,
 ) -> InspectionResult:
     """Validate, analyze, and grade an uploaded product image.
 
@@ -442,20 +446,24 @@ def inspect_produce(
     report generation are deferred to ``finalize_inspection`` so the farmer sees
     a verdict without waiting for two more hosted-model round trips.
     """
+    started = time.monotonic()
     supported = supported_types or list_active_category_slugs()
     image = load_and_validate_image(data)
+    LOGGER.info("Image validation took %.2fs.", time.monotonic() - started)
     detector = detect
     if detector is None:
         detector = create_vision_detector(supported_types=supported)
+    started = time.monotonic()
     try:
         finding = detector(image)
     except DetectionError as exc:
         raise InspectionDetectionError("Vision detection failed.") from exc
+    LOGGER.info("Vision detection took %.2fs.", time.monotonic() - started)
     finding = _normalize_category(finding, supported)
     grade_value, action = grade(finding)
     verdict_value = _verdict(grade_value, finding)
     result = InspectionResult(
-        inspection_id=str(uuid4()),
+        inspection_id=inspection_id or str(uuid4()),
         produce_type=finding.produce_type,
         detected_item=finding.detected_item.strip(),
         item_is_fruit=finding.item_is_fruit,
@@ -469,7 +477,9 @@ def inspect_produce(
         verdict_notes=_verdict_notes(finding, grade_value, verdict_value),
         recommended_action=action,
     )
+    started = time.monotonic()
     save_inspection_history(result, image, data)
+    LOGGER.info("Inspection persistence took %.2fs.", time.monotonic() - started)
     return result
 
 

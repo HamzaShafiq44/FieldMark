@@ -53,6 +53,7 @@ def transcribe_voice_note(data: bytes, filename: str) -> str:
         raise ReportAIError("GEMINI_API_KEY is not configured.")
     mime_type = MIME_TYPES.get(Path(filename).suffix.lower(), DEFAULT_MIME_TYPE)
     client = get_gemini_transcription_client(settings.gemini_api_key)
+    LOGGER.info("Voice transcription using model %s.", settings.gemini_transcription_model)
     uploaded = None
     try:
         with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix) as temp:

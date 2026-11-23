@@ -22,6 +22,7 @@ GEMINI_TIMEOUT_MS = 20_000
 GEMINI_MAX_FALLBACKS = 2
 GEMINI_FALLBACK_BACKOFF_SECONDS = 0.5
 DEFAULT_INSPECTION_DB_PATH = BASE_DIR / "data" / "inspections.sqlite3"
+DEFAULT_PROMPT_TEMPLATES_DIR = BASE_DIR / "app" / "ai" / "prompt_templates"
 DEFAULT_FRONTEND_ORIGIN = "http://localhost:3000"
 
 
@@ -44,6 +45,7 @@ class Settings(BaseSettings):
     gemini_timeout_ms: int = GEMINI_TIMEOUT_MS
     gemini_transcription_model: str = DEFAULT_GEMINI_TRANSCRIPTION_MODEL
     inspection_db_path: Path = DEFAULT_INSPECTION_DB_PATH
+    prompt_templates_dir: Path = DEFAULT_PROMPT_TEMPLATES_DIR
     max_image_bytes: int = MAX_IMAGE_BYTES
     max_voice_note_bytes: int = MAX_VOICE_NOTE_BYTES
     max_image_pixels: int = MAX_IMAGE_PIXELS
