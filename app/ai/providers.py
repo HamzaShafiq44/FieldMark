@@ -19,3 +19,7 @@ def defect_summary(finding: Finding) -> str:
 
 class DetectionError(RuntimeError):
     """Raised when a configured vision provider cannot return a valid finding."""
+
+
+class QuotaExhaustedError(DetectionError):
+    """Raised when a provider's daily quota is spent; retrying other models is futile."""

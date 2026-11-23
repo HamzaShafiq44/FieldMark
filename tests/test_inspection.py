@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from app.ai.providers import DetectionError
+from app.ai.providers import DetectionError, QuotaExhaustedError
 from app.ai.schemas import Condition, DefectType, Finding, ProduceType, Severity
 from app.core.config import settings
 from app.services import inspection_service
@@ -171,6 +171,16 @@ def test_reject_notes_omit_confidence_percentages_and_thresholds() -> None:
     result = inspect_produce(_jpeg_bytes(), detect=lambda _: finding)
     assert result.grade == "Reject"
     assert all("%" not in note and "threshold" not in note.lower() for note in result.verdict_notes)
+
+
+def test_quota_error_keeps_its_actionable_message() -> None:
+    """A quota failure is not replaced by the generic vision error."""
+
+    def fail(_image: Image.Image) -> Finding:
+        raise QuotaExhaustedError("Gemini daily quota exhausted.")
+
+    with pytest.raises(QuotaExhaustedError, match="daily quota exhausted"):
+        inspect_produce(_jpeg_bytes(), detect=fail)
 
 
 def test_invalid_image_rejected() -> None:

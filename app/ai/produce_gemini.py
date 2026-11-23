@@ -1,6 +1,7 @@
 """Google Gemini vision provider using structured JSON output."""
 
 import logging
+import re
 import time
 from collections.abc import Sequence
 
@@ -18,17 +19,40 @@ from app.ai.prompts import (
     get_localization_prompt,
     get_system_prompt,
 )
-from app.ai.providers import DetectionError, defect_summary
+from app.ai.providers import DetectionError, QuotaExhaustedError, defect_summary
 from app.ai.schemas import BBox, DefectLocalization, Finding
 from app.core.config import settings
 
 LOGGER = logging.getLogger(__name__)
 TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+QUOTA_EXHAUSTED_MESSAGE = (
+    "Gemini daily quota exhausted. Enable billing or set VISION_PROVIDER=groq, "
+    "then try again later."
+)
+_LONG_RETRY_SECONDS = 60 * 60
 
 
 def _is_transient(exc: genai.errors.APIError) -> bool:
     """Return whether a provider error is a temporary capacity/rate issue."""
     return exc.code in TRANSIENT_STATUS_CODES
+
+
+def _is_quota_exhausted(exc: genai.errors.APIError) -> bool:
+    """Tell an exhausted daily quota from a short-lived rate limit.
+
+    Fallback models share the same free-tier allowance, so retrying them only
+    adds delay when the quota for the day is already gone.
+    """
+    if exc.code != 429:
+        return False
+    payload = str(getattr(exc, "details", "")).lower()
+    status = str(getattr(exc, "status", "")).lower()
+    if "resource_exhausted" not in status and "resource_exhausted" not in payload:
+        return False
+    match = re.search(r"retrydelay['\"]?\s*[:=]\s*['\"]?(\d+)s", payload)
+    if match and int(match.group(1)) >= _LONG_RETRY_SECONDS:
+        return True
+    return "freetier" in payload or "perday" in payload
 
 
 def _enum(*values: str) -> types.Schema:
@@ -178,6 +202,8 @@ class GeminiVisionDetector:
                 )
                 return response.text or ""
             except genai.errors.APIError as exc:
+                if _is_quota_exhausted(exc):
+                    raise QuotaExhaustedError(QUOTA_EXHAUSTED_MESSAGE) from exc
                 if not _is_transient(exc):
                     raise
                 last_error = exc

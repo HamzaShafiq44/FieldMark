@@ -10,11 +10,16 @@ from PIL import Image
 from pydantic import SecretStr
 
 from app.ai.client_factory import get_gemini_transcription_client, get_groq_client
-from app.ai.produce_gemini import FINDING_SCHEMA, LOCALIZATION_SCHEMA, GeminiVisionDetector
+from app.ai.produce_gemini import (
+    FINDING_SCHEMA,
+    LOCALIZATION_SCHEMA,
+    GeminiVisionDetector,
+    _is_quota_exhausted,
+)
 from app.ai.produce_groq import GroqVisionDetector
 from app.ai.prompts import SYSTEM_PROMPT, get_localization_prompt, get_system_prompt
 from app.ai.provider_factory import create_vision_detector
-from app.ai.providers import DetectionError
+from app.ai.providers import DetectionError, QuotaExhaustedError
 from app.ai.schemas import Condition, DefectType, Finding, ProduceType
 from app.core.config import Settings, settings
 
@@ -186,6 +191,68 @@ def test_gemini_falls_back_to_other_model_on_capacity_error(
     ]
     assert "Gemini request using model gemini-3.8-flash" in caplog.text
     assert result.produce_type == "tomato"
+
+
+def _quota_error() -> errors.ClientError:
+    """Build a daily-quota 429 like Gemini's free tier returns."""
+    return errors.ClientError(
+        429,
+        {
+            "error": {
+                "code": 429,
+                "message": "Quota exceeded. Please retry in 20h30m42s.",
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": "73842s",
+                    },
+                    {
+                        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                        "violations": [
+                            {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}
+                        ],
+                    },
+                ],
+            }
+        },
+    )
+
+
+def test_quota_exhaustion_is_detected() -> None:
+    """Only long, daily-quota 429s count as exhausted quota."""
+    assert _is_quota_exhausted(_quota_error())
+    short_limit = errors.ClientError(
+        429,
+        {
+            "error": {
+                "code": 429,
+                "message": "rate limited",
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [{"retryDelay": "3s"}],
+            }
+        },
+    )
+    assert not _is_quota_exhausted(short_limit)
+    assert not _is_quota_exhausted(errors.ClientError(400, {"error": {"status": "BAD_REQUEST"}}))
+
+
+def test_gemini_quota_error_skips_all_fallback_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A spent daily quota must not burn through the fallback chain."""
+    monkeypatch.setattr(settings, "gemini_fallback_backoff_seconds", 0)
+    client = Mock()
+    client.models.generate_content.side_effect = _quota_error()
+    detector = GeminiVisionDetector(
+        SecretStr("test-key"),
+        "gemini-4-hydrogen",
+        fallback_models=["gemini-3.8-flash", "gemini-3.6-flash"],
+    )
+    with (
+        patch("app.ai.client_factory.genai.Client", return_value=client),
+        pytest.raises(QuotaExhaustedError, match="daily quota exhausted"),
+    ):
+        detector(_image())
+    assert client.models.generate_content.call_count == 1
 
 
 def test_gemini_does_not_fall_back_on_permanent_error() -> None:

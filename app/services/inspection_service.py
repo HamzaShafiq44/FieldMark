@@ -9,7 +9,7 @@ from uuid import uuid4
 from PIL import Image, UnidentifiedImageError
 
 from app.ai.provider_factory import create_vision_detector
-from app.ai.providers import DetectionError, VisionDetector
+from app.ai.providers import DetectionError, QuotaExhaustedError, VisionDetector
 from app.ai.schemas import (
     DEFAULT_DISCLAIMER,
     BBox,
@@ -456,6 +456,8 @@ def inspect_produce(
     started = time.monotonic()
     try:
         finding = detector(image)
+    except QuotaExhaustedError:
+        raise
     except DetectionError as exc:
         raise InspectionDetectionError("Vision detection failed.") from exc
     LOGGER.info("Vision detection took %.2fs.", time.monotonic() - started)

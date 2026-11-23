@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from app.ai.providers import DetectionError
+from app.ai.providers import DetectionError, QuotaExhaustedError
 from app.ai.schemas import InspectionResult, JobKind, JobStatus, Severity
 from app.core.config import settings
 from app.main import app
@@ -204,6 +204,12 @@ def test_uploaded_file_is_removed_after_processing(monkeypatch: pytest.MonkeyPat
     ]
     _await_job(job_id)
     assert not (job_service.uploads_dir() / f"{job_id}.bin").exists()
+
+
+def test_quota_error_is_surfaced_to_the_user() -> None:
+    """The job error carries the actionable quota message."""
+    message = "Gemini daily quota exhausted. Enable billing or set VISION_PROVIDER=groq."
+    assert job_service._safe_error(QuotaExhaustedError(message)) == message
 
 
 def test_job_submission_validation(monkeypatch: pytest.MonkeyPatch) -> None:

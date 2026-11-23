@@ -41,7 +41,7 @@ export function InspectionJobsProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const applyJobs = useCallback(
-    (incoming: InspectionJob[]) => {
+    (incoming: InspectionJob[], allowHandoff: boolean = true) => {
       setJobs(incoming)
       for (const job of incoming) {
         const previous = previousStatuses.current[job.job_id]
@@ -51,11 +51,12 @@ export function InspectionJobsProvider({ children }: { children: ReactNode }) {
         const justCompleted = Boolean(
           previous && previous !== job.status && TERMINAL_STATUSES.includes(job.status),
         )
-        if (justCompleted) {
+        if (allowHandoff && justCompleted) {
           nextToastId.current += 1
           pushToast(toastForJob(job, nextToastId.current))
         }
         if (
+          allowHandoff &&
           job.status === 'completed' &&
           job.result &&
           (justCompleted || (!hadReport && job.report_ready))
@@ -73,7 +74,9 @@ export function InspectionJobsProvider({ children }: { children: ReactNode }) {
     let active = true
     listJobs()
       .then((initial) => {
-        if (active) applyJobs(initial)
+        // The first load only establishes baselines; a stale result must not
+        // reopen the panel after a browser refresh.
+        if (active) applyJobs(initial, false)
       })
       .catch(() => {
         // Progress is best-effort; the inspection itself keeps running.

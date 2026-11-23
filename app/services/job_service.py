@@ -13,7 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.ai.model_info import describe_models
-from app.ai.providers import DetectionError
+from app.ai.providers import DetectionError, QuotaExhaustedError
 from app.ai.schemas import InspectionJob, JobKind, JobStatus
 from app.core.config import settings
 from app.services.inspection_service import (
@@ -178,6 +178,8 @@ def _delete_upload(job_id: str) -> None:
 
 def _safe_error(exc: Exception) -> str:
     """Expose an actionable message without leaking keys or personal data."""
+    if isinstance(exc, QuotaExhaustedError):
+        return str(exc)
     if isinstance(exc, InvalidImageError):
         return "The uploaded image could not be read."
     if isinstance(exc, DetectionError):
