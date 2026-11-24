@@ -91,6 +91,11 @@ function CategoriesPage() {
   const [actionSlug, setActionSlug] = useState<string | null>(null)
   const [cardError, setCardError] = useState<string | null>(null)
   const activeCount = categories.filter((category) => category.is_active).length
+  const activeCategories = categories.filter((category) => category.is_active)
+  const inactiveCategories = categories.filter((category) => !category.is_active)
+  const focusCategoryName = useCallback(() => {
+    document.getElementById('category-name')?.focus()
+  }, [])
 
   const loadCategories = useCallback(async (showLoading = false) => {
     if (showLoading) setIsLoading(true)
@@ -229,6 +234,109 @@ function CategoriesPage() {
     }
   }
 
+  const renderCategoryCard = (category: ProductCategory) => {
+    const isEditing = editingSlug === category.slug
+    const isBusy = actionSlug === category.slug
+    return (
+      <article
+        className={`category-card ${category.is_active ? '' : 'category-card-inactive'}`}
+        key={category.slug}
+      >
+        <span className="category-emoji" aria-hidden="true">
+          {category.emoji || '🌱'}
+        </span>
+        {isEditing ? (
+          <div className="category-edit">
+            <label>
+              Name
+              <input
+                value={editName}
+                maxLength={40}
+                list="fruit-suggestions"
+                onChange={(event) => setEditName(event.currentTarget.value)}
+              />
+            </label>
+            <label>
+              Emoji
+              <input
+                className="category-emoji-input"
+                value={editEmoji}
+                maxLength={MAX_EMOJI_LENGTH}
+                onChange={(event) => setEditEmoji(event.currentTarget.value)}
+              />
+            </label>
+            <div className="category-card-actions">
+              <button
+                className="category-action category-action-primary"
+                type="button"
+                onClick={() => void handleSaveEdit(category)}
+                disabled={isSavingEdit}
+              >
+                {isSavingEdit ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}
+                Save
+              </button>
+              <button
+                className="category-action"
+                type="button"
+                onClick={cancelEditing}
+                disabled={isSavingEdit}
+              >
+                <X size={14} /> Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="category-copy">
+              <div className="category-title-row">
+                <strong>{category.display_name}</strong>
+                <span
+                  className={`category-badge ${
+                    category.is_active ? 'category-badge-active' : 'category-badge-inactive'
+                  }`}
+                >
+                  <i className="category-status-dot" aria-hidden="true" />
+                  {category.is_active ? 'Active' : 'Disabled'}
+                </span>
+              </div>
+              <span className="category-slug">{category.slug}</span>
+              {formatCreatedAt(category.created_at) && (
+                <small>Added {formatCreatedAt(category.created_at)}</small>
+              )}
+            </div>
+            <div className="category-card-actions">
+              <button
+                className="category-action"
+                type="button"
+                onClick={() => startEditing(category)}
+                disabled={isBusy || isSavingEdit}
+              >
+                <Pencil size={14} /> Rename
+              </button>
+              <button
+                className="category-action"
+                type="button"
+                onClick={() => void handleToggleActive(category)}
+                disabled={isBusy || isSavingEdit}
+              >
+                {isBusy ? <LoaderCircle className="spin" size={14} /> : <Power size={14} />}
+                {category.is_active ? 'Disable' : 'Enable'}
+              </button>
+              <button
+                className="category-action category-action-danger"
+                type="button"
+                onClick={() => void handleDelete(category)}
+                disabled={isBusy || isSavingEdit}
+              >
+                <Trash2 size={14} /> Delete
+              </button>
+            </div>
+          </>
+        )}
+      </article>
+    )
+  }
+
   return (
     <div className="categories-page">
       <section className="categories-hero" aria-label="Category overview">
@@ -308,123 +416,38 @@ function CategoriesPage() {
           {isLoading ? (
             <p className="history-message">Loading categories…</p>
           ) : categories.length === 0 ? (
-            <div className="history-empty">
-              <Sparkles size={20} />
-              <p>No categories yet. Add the first one using the form.</p>
+            <div className="history-empty history-empty-illustrated">
+              <span className="history-empty-icon">
+                <Sparkles size={24} />
+              </span>
+              <div className="history-empty-copy">
+                <strong>No categories yet</strong>
+                <p>Add a product below to teach the inspector what to expect.</p>
+              </div>
+              <button className="history-empty-cta" type="button" onClick={focusCategoryName}>
+                Add the first category <Plus size={15} />
+              </button>
             </div>
           ) : (
-            <div className="category-list">
-              {categories.map((category) => {
-                const isEditing = editingSlug === category.slug
-                const isBusy = actionSlug === category.slug
-                return (
-                  <article
-                    className={`category-card ${category.is_active ? '' : 'category-card-inactive'}`}
-                    key={category.slug}
-                  >
-                    <span className="category-emoji" aria-hidden="true">
-                      {category.emoji || '🌱'}
-                    </span>
-                    {isEditing ? (
-                      <div className="category-edit">
-                        <label>
-                          Name
-                          <input
-                            value={editName}
-                            maxLength={40}
-                            list="fruit-suggestions"
-                            onChange={(event) => setEditName(event.currentTarget.value)}
-                          />
-                        </label>
-                        <label>
-                          Emoji
-                          <input
-                            className="category-emoji-input"
-                            value={editEmoji}
-                            maxLength={MAX_EMOJI_LENGTH}
-                            onChange={(event) => setEditEmoji(event.currentTarget.value)}
-                          />
-                        </label>
-                        <div className="category-card-actions">
-                          <button
-                            className="category-action category-action-primary"
-                            type="button"
-                            onClick={() => void handleSaveEdit(category)}
-                            disabled={isSavingEdit}
-                          >
-                            {isSavingEdit ? (
-                              <LoaderCircle className="spin" size={14} />
-                            ) : (
-                              <Check size={14} />
-                            )}
-                            Save
-                          </button>
-                          <button
-                            className="category-action"
-                            type="button"
-                            onClick={cancelEditing}
-                            disabled={isSavingEdit}
-                          >
-                            <X size={14} /> Cancel
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="category-copy">
-                          <div className="category-title-row">
-                            <strong>{category.display_name}</strong>
-                            <span
-                              className={`category-badge ${
-                                category.is_active
-                                  ? 'category-badge-active'
-                                  : 'category-badge-inactive'
-                              }`}
-                            >
-                              {category.is_active ? 'Active' : 'Disabled'}
-                            </span>
-                          </div>
-                          <span className="category-slug">{category.slug}</span>
-                          {formatCreatedAt(category.created_at) && (
-                            <small>Added {formatCreatedAt(category.created_at)}</small>
-                          )}
-                        </div>
-                        <div className="category-card-actions">
-                          <button
-                            className="category-action"
-                            type="button"
-                            onClick={() => startEditing(category)}
-                            disabled={isBusy || isSavingEdit}
-                          >
-                            <Pencil size={14} /> Rename
-                          </button>
-                          <button
-                            className="category-action"
-                            type="button"
-                            onClick={() => void handleToggleActive(category)}
-                            disabled={isBusy || isSavingEdit}
-                          >
-                            {isBusy ? (
-                              <LoaderCircle className="spin" size={14} />
-                            ) : (
-                              <Power size={14} />
-                            )}
-                            {category.is_active ? 'Disable' : 'Enable'}
-                          </button>
-                          <button
-                            className="category-action category-action-danger"
-                            type="button"
-                            onClick={() => void handleDelete(category)}
-                            disabled={isBusy || isSavingEdit}
-                          >
-                            <Trash2 size={14} /> Delete
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </article>
-                )
-              })}
+            <div className="category-groups">
+              {activeCategories.length > 0 && (
+                <section className="category-group" aria-label="Active categories">
+                  <div className="category-group-heading">
+                    <span>ACTIVE</span>
+                    <span>{activeCategories.length}</span>
+                  </div>
+                  <div className="category-list">{activeCategories.map(renderCategoryCard)}</div>
+                </section>
+              )}
+              {inactiveCategories.length > 0 && (
+                <section className="category-group" aria-label="Disabled categories">
+                  <div className="category-group-heading">
+                    <span>DISABLED</span>
+                    <span>{inactiveCategories.length}</span>
+                  </div>
+                  <div className="category-list">{inactiveCategories.map(renderCategoryCard)}</div>
+                </section>
+              )}
             </div>
           )}
         </section>
@@ -456,6 +479,7 @@ function CategoriesPage() {
             <label>
               Product name
               <input
+                id="category-name"
                 value={name}
                 maxLength={40}
                 list="fruit-suggestions"

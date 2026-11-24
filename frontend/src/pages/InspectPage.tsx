@@ -3,6 +3,7 @@ import {
   Camera,
   Check,
   CircleAlert,
+  ClipboardList,
   Clock3,
   Download,
   Eye,
@@ -33,6 +34,7 @@ import {
   type InspectionHistoryItem,
   type InspectionResult,
 } from '../services/api'
+import PhotoLightbox from '../components/PhotoLightbox'
 import ReviewDrawer from '../components/ReviewDrawer'
 import { useInspectionJobs } from '../context/useInspectionJobs.ts'
 import { listCategories, type ProductCategory } from '../services/categories'
@@ -298,6 +300,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
     clearJobError,
   } = useInspectionJobs()
   const cameraInput = useRef<HTMLInputElement>(null)
+  const waveformRef = useRef<HTMLCanvasElement>(null)
   const voiceNoteInput = useRef<HTMLInputElement>(null)
   const previewUrlRef = useRef<string | null>(null)
   const [file, setFile] = useState<File | null>(null)
@@ -338,6 +341,7 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const [reportError, setReportError] = useState<string | null>(null)
   // A saved inspection opened in the read-only review overlay.
   const [reviewId, setReviewId] = useState<string | null>(null)
+  const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null)
   // The submit call returns in milliseconds; the UI must keep spinning until
   // the queued job actually finishes, not until the upload request ends.
   const analysisJob = jobs.find((job) => job.status === 'queued' || job.status === 'processing')
@@ -357,6 +361,14 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
   const heroCategories = activeCategories.slice(0, HERO_CARD_SLOTS.length)
   const visibleHistory = history.filter((item) => matchesHistoryFilter(item, historyFilter))
   const closeReview = useCallback(() => setReviewId(null), [])
+  const closeLightbox = useCallback(() => setLightbox(null), [])
+  const focusUpload = useCallback(() => {
+    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? 'auto'
+      : 'smooth'
+    document.querySelector('.upload-panel')?.scrollIntoView({ behavior, block: 'center' })
+    window.setTimeout(() => document.getElementById('product-file')?.focus(), 350)
+  }, [])
 
   const stopMicMeter = useCallback(() => {
     if (micLevelTimerRef.current) {
@@ -593,6 +605,21 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
             if (amplitude > peak) peak = amplitude
           }
           setMicLevel(peak)
+          const canvas = waveformRef.current
+          const context = canvas?.getContext('2d')
+          if (canvas && context) {
+            context.clearRect(0, 0, canvas.width, canvas.height)
+            context.strokeStyle = '#c8e58e'
+            context.lineWidth = 2
+            context.beginPath()
+            const step = Math.max(1, Math.floor(data.length / canvas.width))
+            for (let x = 0, index = 0; x < canvas.width; x += step, index += step) {
+              const y = (data[index] / 255) * canvas.height
+              if (x === 0) context.moveTo(x, y)
+              else context.lineTo(x, y)
+            }
+            context.stroke()
+          }
           silentMs = peak < SILENCE_PEAK_THRESHOLD ? silentMs + 100 : 0
           if (!warnedAboutSilence && silentMs >= 1500) {
             warnedAboutSilence = true
@@ -960,14 +987,31 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
         >
           <div className="orbit orbit-one" />
           <div className="orbit orbit-two" />
+          <svg
+            className="hero-links"
+            viewBox="0 0 400 280"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <path d="M118 82 C170 34 245 48 292 74" />
+            <path d="M110 205 C165 246 245 242 302 196" />
+          </svg>
           {heroCategories.map((category, index) => (
-            <div className={`fruit-card ${HERO_CARD_SLOTS[index]}`} key={category.slug}>
+            <div
+              className={`fruit-card ${HERO_CARD_SLOTS[index]}`}
+              key={category.slug}
+              style={{ animationDelay: `${index * 0.4}s` }}
+            >
               <span className="fruit-emoji">{category.emoji || '🌱'}</span>
               {index === 0 && (
                 <span className="fruit-label">{category.display_name.toUpperCase()}</span>
               )}
             </div>
           ))}
+          <div className="hero-art-chip">
+            <span className="hero-art-pulse" />
+            {activeCategories.length} ACTIVE CATEGORIES
+          </div>
           <div className="art-stamp">
             <Sparkles size={16} />
             <span>GROWN WITH CARE</span>
@@ -1194,6 +1238,13 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
 
             {isRecording && (
               <div className="mic-level" role="status" aria-label="Microphone input level">
+                <canvas
+                  className="voice-waveform"
+                  ref={waveformRef}
+                  width={240}
+                  height={36}
+                  aria-hidden="true"
+                />
                 <span className="mic-level-label">Mic level</span>
                 <span className="mic-level-track">
                   <span
@@ -1372,6 +1423,18 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                 </div>
               </div>
 
+              {!isUnsupportedItem && visibleResult.confidence !== null && (
+                <div className="confidence-block">
+                  <div className="confidence-head">
+                    <span>AI CONFIDENCE</span>
+                    <strong>{Math.round(visibleResult.confidence * 100)}%</strong>
+                  </div>
+                  <div className="confidence-track">
+                    <span style={{ width: `${Math.round(visibleResult.confidence * 100)}%` }} />
+                  </div>
+                </div>
+              )}
+
               {resultClassification === 'out_of_categories' && (
                 <p className="category-notice" role="status">
                   This product is {productName(visibleResult, categories)} - from out of inspection
@@ -1394,18 +1457,42 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
                     className={`photo-evidence-grid ${visibleResult.bbox ? 'has-annotated' : ''}`}
                   >
                     <figure className="photo-figure">
-                      <img
-                        src={previewUrl ?? inspectionOriginalUrl(visibleResult.inspection_id)}
-                        alt="Original uploaded product photo"
-                      />
+                      <button
+                        className="photo-zoom-button"
+                        type="button"
+                        aria-label="View original photo full size"
+                        onClick={() =>
+                          setLightbox({
+                            src: previewUrl ?? inspectionOriginalUrl(visibleResult.inspection_id),
+                            caption: 'Original photo',
+                          })
+                        }
+                      >
+                        <img
+                          src={previewUrl ?? inspectionOriginalUrl(visibleResult.inspection_id)}
+                          alt="Original uploaded product photo"
+                        />
+                      </button>
                       <figcaption>Original photo</figcaption>
                     </figure>
                     {visibleResult.bbox && (
                       <figure className="photo-figure">
-                        <img
-                          src={inspectionAnnotatedUrl(visibleResult.inspection_id)}
-                          alt="Product photo with the reported defect area marked"
-                        />
+                        <button
+                          className="photo-zoom-button"
+                          type="button"
+                          aria-label="View annotated photo full size"
+                          onClick={() =>
+                            setLightbox({
+                              src: inspectionAnnotatedUrl(visibleResult.inspection_id),
+                              caption: 'Reported defect area',
+                            })
+                          }
+                        >
+                          <img
+                            src={inspectionAnnotatedUrl(visibleResult.inspection_id)}
+                            alt="Product photo with the reported defect area marked"
+                          />
+                        </button>
                         <figcaption>Reported defect area</figcaption>
                       </figure>
                     )}
@@ -1630,11 +1717,30 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
             </button>
           </div>
         ) : isHistoryLoading && history.length === 0 ? (
-          <p className="history-message">Loading saved inspections…</p>
+          <div className="history-skeletons" aria-hidden="true">
+            {[0, 1, 2].map((row) => (
+              <div className="history-skeleton-row" key={row}>
+                <span className="skeleton skeleton-thumb" />
+                <span className="history-skeleton-copy">
+                  <span className="skeleton skeleton-line" />
+                  <span className="skeleton skeleton-line skeleton-line-short" />
+                </span>
+                <span className="skeleton skeleton-pill" />
+              </div>
+            ))}
+          </div>
         ) : history.length === 0 ? (
-          <div className="history-empty">
-            <Clock3 size={20} />
-            <p>Your completed inspections will be saved here.</p>
+          <div className="history-empty history-empty-illustrated">
+            <span className="history-empty-icon">
+              <ClipboardList size={26} />
+            </span>
+            <div className="history-empty-copy">
+              <strong>No inspections saved yet</strong>
+              <p>Inspect a photo or voice note and it will appear here for review.</p>
+            </div>
+            <button className="history-empty-cta" type="button" onClick={focusUpload}>
+              Start an inspection <ArrowRight size={15} />
+            </button>
           </div>
         ) : visibleHistory.length === 0 ? (
           <div className="history-empty">
@@ -1820,6 +1926,9 @@ function InspectPage({ onApiStatusChange }: InspectPageProps) {
           categories={categories}
           onClose={closeReview}
         />
+      )}
+      {lightbox && (
+        <PhotoLightbox src={lightbox.src} caption={lightbox.caption} onClose={closeLightbox} />
       )}
     </>
   )
